@@ -36,10 +36,10 @@ El sueño es el que prepara el estanque (temas, enlaces entre recuerdos) para qu
 
 Cada recuerdo es un texto con su vector (embedding), una energía y, opcionalmente, un tema.
 
-- **Guardar (`inject_memory`):** es rápido y no usa modelos de lenguaje. Si ya existe un recuerdo casi idéntico (similitud ≥ 0.95) solo le sube la energía. Si no, guarda uno nuevo. **Nunca reescribe ni fusiona recuerdos.** Con `fijo=true` el recuerdo es de identidad: no decae y nunca se archiva.
+- **Guardar (`inject_memory`):** es rápido y no usa modelos de lenguaje. Si ya existe un recuerdo casi idéntico (similitud ≥ 0.90) solo le sube la energía. Si no, guarda uno nuevo. **Nunca reescribe ni fusiona recuerdos.** Con `fijo=true` el recuerdo es de identidad: no decae y nunca se archiva.
 - **Consultar (`query_memory`):** lanza las **5 piedras** (la pregunta y hasta 4 ángulos sacados de ella) en una sola llamada de embeddings. Cada piedra trae su onda de recuerdos parecidos. Primera ronda: las crestas se suman y los valles se descartan. Los recuerdos enlazados por el sueño se agregan a los candidatos. Segunda ronda: los 3 mejores se vuelven las nuevas piedras y gana quien más se parece a ellos. Devuelve hasta 3 resultados.
-- **Sótano:** si la mejor coincidencia de la biblioteca es débil (< 0.65), las piedras también bajan al sótano y el Bibliotecario **resucita** el recuerdo.
-- **Sueño (`force_dream`):** (1) baja al sótano lo que lleva tiempo sin usarse, (2) clasifica por tema los recuerdos nuevos, (3) enlaza los recuerdos parecidos sin modificarlos y (4) si dos recuerdos se contradicen, el más viejo baja al sótano.
+- **Sótano:** si la mejor coincidencia de la biblioteca es débil, las piedras también bajan al sótano y el Bibliotecario **resucita** el recuerdo.
+- **Sueño (`force_dream`):** (1) baja al sótano lo que lleva tiempo sin usarse, (2) clasifica por tema los recuerdos nuevos, (3) enlaza los recuerdos parecidos sin modificarlos y (4) si dos recuerdos se contradicen, el más viejo baja al sótano (el modelo tiene que decirlo en los dos órdenes para que cuente). Lo que baja por contradicción nunca se resucita solo.
 - **Reflexión:** `trigger_reflection` genera una intuición a partir de los recuerdos con más energía y la guarda como recuerdo nuevo.
 
 ### ¿Por qué es rápida?
@@ -50,6 +50,24 @@ Cada recuerdo es un texto con su vector (embedding), una energía y, opcionalmen
 - La cache se actualiza sola si otro proceso (por ejemplo la CLI) cambia la base de datos.
 - Medido con 5,000 recuerdos de 768 dimensiones (sin contar Ollama): consulta ≈ 3 ms, guardar ≈ 20 ms. Prueba tú mismo: `python tests/bench_speed.py`.
 - Sin numpy funciona igual, pero mucho más lento.
+
+### Calidad de la búsqueda (medida con Ollama real)
+
+La primera prueba con Ollama real salió mal (3 de 11 preguntas acertadas) y no era culpa de las ideas sino de dos cosas del modelo de embeddings:
+
+1. **Prefijos:** `embeddinggemma` espera un prefijo distinto para preguntas y para documentos. Ya se agregan solos (también para `nomic-embed-text`).
+2. **Centrado:** todos los vectores comparten una parte "genérica" que hace que todo se parezca a todo (similitudes de 0.65 a 0.85 para cualquier par). Se le resta la media de la memoria y los vectores se separan mucho mejor.
+
+| Prueba (12 recuerdos, 11 preguntas) | Antes | Ahora |
+|---|---|---|
+| Acierto en el primer resultado | 3/11 | 10/11 (top-3: 11/11) |
+| Similitud de lo correcto vs. lo incorrecto | 0.79 vs 0.70 | 0.43 vs 0.19 |
+
+Con esos datos se calibraron los umbrales (duplicados: 0.94–0.97, contradicciones: 0.44–0.76, complementarios: 0.39–0.56, sin relación: negativo).
+
+Sobre las piedras, con esta muestra chica: en preguntas de un solo hecho una piedra acierta igual o un poco mejor (11/11 vs 10/11); en preguntas que necesitan varios recuerdos las 5 piedras cubren más (7/8 vs 6/8). Los ángulos inventados por un LLM salieron peores y más lentos que las palabras clave, por eso están apagados.
+
+**Migración automática:** si cambias de modelo o de prefijos, al arrancar el motor recalcula los vectores de todos los recuerdos y guarda un respaldo en `memoria.db.bak-embeddings`. Los textos no se tocan.
 
 ## Requisitos
 
@@ -116,7 +134,8 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `MEMHOLOGRAFIC_LLM_MODEL` | `tev1:0.8b` | Modelo de decisión (temas y contradicciones) |
 | `MEMHOLOGRAFIC_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
 | `MEMHOLOGRAFIC_STONES` | `5` | Piedras por consulta |
-| `MEMHOLOGRAFIC_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (más ángulos buenos, pero más lento) |
+| `MEMHOLOGRAFIC_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (en las pruebas salió peor y más lento) |
+| `MEMHOLOGRAFIC_QUERY_PREFIX` / `MEMHOLOGRAFIC_DOC_PREFIX` | según el modelo | Prefijos de pregunta y documento. Se ponen solos para `embeddinggemma` y `nomic-embed-text` |
 | `MEMHOLOGRAFIC_GRAPH_ENABLED` | `false` | Activa `generate_graph` |
 
 Se ponen dentro de `"env": { ... }` en la config del servidor.
@@ -160,7 +179,7 @@ mcp_server.py    # servidor MCP
 mem_engine.py    # motor de memoria (inyectar, consultar, soñar, reflexionar)
 graph_engine.py  # grafo de entidades (opcional)
 mem_cli.py       # CLI
-tests/           # test_engine.py (pruebas sin Ollama), bench_speed.py (velocidad)
+tests/           # test_engine.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
 docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 ```
 
@@ -169,19 +188,20 @@ docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 | Punto | Estado |
 |---|---|
 | Biblioteca con energía, temas y namespaces | Hecho |
-| Sótano y resurrección | Hecho |
+| Sótano y resurrección (lo contradicho no resucita) | Hecho |
 | Decaimiento de energía por falta de uso (solo dentro del sueño) | Hecho |
 | La consulta baja al sótano si la coincidencia es débil | Hecho |
 | Recuerdos fijos (`fijo=true`) | Hecho |
 | Velocidad: cache de vectores con numpy, embeddings en lote, guardar sin LLM | Hecho |
 | Sueño que ordena y enlaza sin reescribir; las contradicciones bajan al sótano | Hecho |
 | Consulta por ondas (5 piedras, crestas y valles, segunda ronda) | Hecho |
-| Probar todo con Ollama real y ajustar los umbrales (0.65, 0.95, 0.8, 0.6) | Pendiente |
-| Ángulos de las piedras con LLM (`MEMHOLOGRAFIC_STONES_LLM`) | Hecho, apagado por defecto; falta probar si mejora |
+| Prueba con Ollama real, prefijos, centrado y umbrales calibrados | Hecho |
+| Probar con una memoria real grande (cientos de recuerdos) y reajustar umbrales si hace falta | Pendiente |
+| Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Pendiente |
 | Benchmark de preguntas y respuestas (MemBench). El `benchmark_runner.py` actual mide fusión y quedó viejo | Pendiente |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |
 | Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |
 
-**Límites conocidos:** las contradicciones ya no se detectan al guardar sino en el sueño, así que entre un guardado y el siguiente sueño pueden coexistir dos datos que se contradicen. El 0.65 y los demás umbrales están puestos a ojo.
+**Límites conocidos:** las contradicciones ya no se detectan al guardar sino en el sueño, así que entre un guardado y el siguiente sueño pueden coexistir dos datos que se contradicen. Los umbrales se calibraron con 12 recuerdos y pueden necesitar ajuste con una memoria grande.
 
 La historia completa del diseño y los experimentos está en [`docs/BITACORA.md`](docs/BITACORA.md).

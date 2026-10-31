@@ -1,5 +1,7 @@
 import os
 import re
+import sys
+import shutil
 import sqlite3
 import json
 import requests
@@ -26,17 +28,36 @@ EMBEDDING_MODEL = os.getenv("MEMHOLOGRAFIC_EMBED_MODEL", "embeddinggemma-2:270m"
 LLM_MODEL = os.getenv("MEMHOLOGRAFIC_LLM_MODEL", "tev1:0.8b")
 SYNTHESIS_MODEL = os.getenv("MEMHOLOGRAFIC_SYNTHESIS_MODEL", "qwen2.5:0.5b")
 
+
+def _default_prefixes(model):
+    """Los modelos de embeddings funcionan mucho mejor si la pregunta y el documento llevan su prefijo."""
+    m = model.lower()
+    if m.startswith("embeddinggemma"):
+        return "task: search result | query: ", "title: none | text: "
+    if m.startswith("nomic-embed"):
+        return "search_query: ", "search_document: "
+    return "", ""
+
+
+_QP, _DP = _default_prefixes(EMBEDDING_MODEL)
+QUERY_PREFIX = os.getenv("MEMHOLOGRAFIC_QUERY_PREFIX", _QP)
+DOC_PREFIX = os.getenv("MEMHOLOGRAFIC_DOC_PREFIX", _DP)
+CENTER_PRIOR = 2  # con pocos recuerdos el centrado se suaviza (media * n / (n + 2))
+CACHE_REBUILD_BELOW = 64  # con menos recuerdos que esto, la cache se reconstruye al guardar (la media cambia mucho)
+
 # --- AJUSTES DE LA BÚSQUEDA POR ONDAS ---
+# Los umbrales estan calibrados para vectores centrados (ver tests/real_test.py)
 STONES = int(os.getenv("MEMHOLOGRAFIC_STONES", "5"))                 # piedras por consulta
 STONES_LLM = os.getenv("MEMHOLOGRAFIC_STONES_LLM", "false").lower() == "true"  # ángulos con LLM
-WEAK_MATCH = 0.65      # si la mejor coincidencia de la biblioteca es menor, tambien se busca en el sotano
-MIN_SIM = 0.5          # similitud minima para devolver un recuerdo
-WAVE_MIN_SIM = 0.45    # similitud minima para que una piedra cuente un recuerdo en su onda
+WEAK_MATCH = 0.40  # si la mejor coincidencia de la biblioteca es menor, tambien se busca en el sotano
+MIN_SIM = 0.18  # similitud minima para devolver un recuerdo
+WAVE_MIN_SIM = 0.15  # similitud minima para que una piedra cuente un recuerdo en su onda
 WAVE_SIZE = 8          # recuerdos por onda
-DUPLICATE_SIM = 0.95   # arriba de esto, inyectar solo refuerza el recuerdo existente
-CONFLICT_SIM = 0.8     # arriba de esto, el sueño revisa si se contradicen
-RELATED_SIM = 0.6      # arriba de esto, el sueño enlaza los recuerdos
+DUPLICATE_SIM = 0.90  # arriba de esto, inyectar solo refuerza el recuerdo existente (duplicados medidos: 0.94-0.97)
+CONFLICT_SIM = 0.40  # arriba de esto, el sueño revisa si se contradicen (contradicciones medidas: 0.44-0.76)
+RELATED_SIM = 0.30  # arriba de esto, el sueño enlaza los recuerdos (sin relacion: negativo)
 DREAM_MAX_CHECKS = 30  # revisiones de contradiccion con LLM por sueño
+ANGLE_WEIGHT = 0.5     # peso de las piedras-angulo frente a la pregunta completa
 
 STOPWORDS = {
     "que", "como", "cual", "cuales", "quien", "donde", "cuando", "cuanto", "para", "por",
@@ -60,14 +81,49 @@ class MemHolograficEngine:
         self._init_db()
         # Cache de vectores en memoria. Se invalida sola cuando la BD cambia (PRAGMA data_version).
         self._cache = {}
+        self._built_n = {}
         self._dv = None
         self._vconn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._ensure_embedding_scheme()
 
     def close(self):
         try:
             self._vconn.close()
         except Exception:
             pass
+
+    def _ensure_embedding_scheme(self):
+        """Si los vectores guardados se hicieron con otro modelo o prefijos, los recalcula (con respaldo)."""
+        scheme = f"{EMBEDDING_MODEL}|{QUERY_PREFIX}|{DOC_PREFIX}"
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key='embed_scheme'").fetchone()
+            if row and row[0] == scheme:
+                return
+            n = conn.execute("SELECT (SELECT COUNT(*) FROM facts) + (SELECT COUNT(*) FROM archived_facts)").fetchone()[0]
+            if n == 0:
+                conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('embed_scheme', ?)", (scheme,))
+                conn.commit()
+                return
+        bak = self.db_path + ".bak-embeddings"
+        if not os.path.exists(bak):
+            shutil.copy2(self.db_path, bak)
+        print(f"MemHolografic: recalculando los embeddings de {n} recuerdos (respaldo en {bak})", file=sys.stderr)
+        updates = []
+        for table in ("facts", "archived_facts"):
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                rows = conn.execute(f"SELECT id, content FROM {table}").fetchall()
+            for start in range(0, len(rows), 32):
+                chunk = rows[start:start + 32]
+                vecs = self.embed_docs([c for _, c in chunk])
+                if any(v is None for v in vecs):
+                    print("MemHolografic: no se pudieron recalcular los embeddings (¿Ollama apagado?). Se reintentará.", file=sys.stderr)
+                    return
+                updates += [(table, fid, json.dumps(v)) for (fid, _), v in zip(chunk, vecs)]
+        with sqlite3.connect(self.db_path) as conn:
+            for table, fid, blob in updates:
+                conn.execute(f"UPDATE {table} SET embedding=? WHERE id=?", (blob, fid))
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('embed_scheme', ?)", (scheme,))
+            conn.commit()
 
     def _ensure_db_folder(self):
         folder = Path(self.db_path).parent
@@ -77,10 +133,11 @@ class MemHolograficEngine:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("CREATE TABLE IF NOT EXISTS facts (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT DEFAULT 'default', content TEXT, energy REAL, embedding TEXT, last_used REAL, pinned INTEGER DEFAULT 0)")
-            cursor.execute("CREATE TABLE IF NOT EXISTS archived_facts (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT DEFAULT 'default', content TEXT, energy REAL, embedding TEXT)")
+            cursor.execute("CREATE TABLE IF NOT EXISTS archived_facts (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT DEFAULT 'default', content TEXT, energy REAL, embedding TEXT, reason TEXT)")
             cursor.execute("CREATE TABLE IF NOT EXISTS topics (id INTEGER PRIMARY KEY AUTOINCREMENT, topic_name TEXT UNIQUE NOT NULL, description TEXT)")
             cursor.execute("CREATE TABLE IF NOT EXISTS fact_topics (fact_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, FOREIGN KEY (fact_id) REFERENCES facts(id), FOREIGN KEY (topic_id) REFERENCES topics(id), PRIMARY KEY (fact_id, topic_id))")
             cursor.execute("CREATE TABLE IF NOT EXISTS links (fact_a INTEGER NOT NULL, fact_b INTEGER NOT NULL, sim REAL, kind TEXT, PRIMARY KEY (fact_a, fact_b))")
+            cursor.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_namespace ON facts(namespace)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fact_topics_topic ON fact_topics(topic_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fact_topics_fact ON fact_topics(fact_id)")
@@ -89,6 +146,9 @@ class MemHolograficEngine:
             if "last_used" not in cols:
                 cursor.execute("ALTER TABLE facts ADD COLUMN last_used REAL")
                 cursor.execute("UPDATE facts SET last_used=?", (time.time(),))
+            arch_cols = [c[1] for c in cursor.execute("PRAGMA table_info(archived_facts)").fetchall()]
+            if "reason" not in arch_cols:
+                cursor.execute("ALTER TABLE archived_facts ADD COLUMN reason TEXT")
             if "pinned" not in cols:
                 cursor.execute("ALTER TABLE facts ADD COLUMN pinned INTEGER DEFAULT 0")
             for topic in CLASSIFICATION_TOPICS:
@@ -125,7 +185,7 @@ class MemHolograficEngine:
     # ------------------------------------------------------------------
     # Embeddings
     # ------------------------------------------------------------------
-    def get_embedding(self, text, retries=3):
+    def _embed_raw(self, text, retries=3):
         for attempt in range(retries):
             try:
                 r = requests.post(OLLAMA_URL, json={"model": EMBEDDING_MODEL, "prompt": text}, timeout=10)
@@ -143,17 +203,33 @@ class MemHolograficEngine:
                 time.sleep(1)
         return None
 
+    def get_embedding(self, text, retries=3):
+        """Embedding de un DOCUMENTO (un recuerdo)."""
+        return self._embed_raw(DOC_PREFIX + text, retries)
+
     def get_embeddings(self, texts):
-        """Varios embeddings en una sola llamada. Si falla, uno por uno."""
+        """Embeddings de PREGUNTAS (las piedras), en una sola llamada. Si falla, una por una."""
         try:
-            r = requests.post(OLLAMA_EMBED_URL, json={"model": EMBEDDING_MODEL, "input": texts}, timeout=30)
+            r = requests.post(OLLAMA_EMBED_URL, json={"model": EMBEDDING_MODEL, "input": [QUERY_PREFIX + t for t in texts]}, timeout=30)
             if r.status_code == 200:
                 embs = r.json().get("embeddings")
                 if isinstance(embs, list) and len(embs) == len(texts) and all(embs):
                     return embs
         except Exception:
             pass
-        return [self.get_embedding(t) for t in texts]
+        return [self._embed_raw(QUERY_PREFIX + t) for t in texts]
+
+    def embed_docs(self, texts):
+        """Embeddings de documentos en lote (para recalcular la memoria). Sin reintentos largos."""
+        try:
+            r = requests.post(OLLAMA_EMBED_URL, json={"model": EMBEDDING_MODEL, "input": [DOC_PREFIX + t for t in texts]}, timeout=120)
+            if r.status_code == 200:
+                embs = r.json().get("embeddings")
+                if isinstance(embs, list) and len(embs) == len(texts) and all(embs):
+                    return embs
+        except Exception:
+            pass
+        return [None] * len(texts)
 
     def calc_sim(self, v1, v2):
         if v1 is None or v2 is None or len(v1) == 0 or len(v2) == 0: return 0.0
@@ -174,6 +250,13 @@ class MemHolograficEngine:
     def _sync_version(self):
         self._dv = self._vconn.execute("PRAGMA data_version").fetchone()[0]
 
+    @staticmethod
+    def _unit(m, mu):
+        m = m - mu if mu is not None else m
+        n = np.linalg.norm(m, axis=-1, keepdims=True)
+        n[n == 0] = 1.0
+        return m / n
+
     def _load_vectors(self, namespace, table="facts"):
         """Devuelve (ids, matriz, indice) de una tabla. Se guarda en cache hasta que la BD cambie."""
         self._check_version()
@@ -181,7 +264,8 @@ class MemHolograficEngine:
         if key in self._cache:
             return self._cache[key]
         with closing(sqlite3.connect(self.db_path)) as conn:
-            rows = conn.execute(f"SELECT id, embedding FROM {table} WHERE namespace=? ORDER BY id", (namespace,)).fetchall()
+            extra = " AND COALESCE(reason, '') != 'contradiccion'" if table == "archived_facts" else ""
+            rows = conn.execute(f"SELECT id, embedding FROM {table} WHERE namespace=?{extra} ORDER BY id", (namespace,)).fetchall()
         ids, vecs, dim = [], [], None
         for fid, blob in rows:
             try:
@@ -196,48 +280,52 @@ class MemHolograficEngine:
                 continue
             ids.append(fid)
             vecs.append(v)
+        mu = None
         if np is not None and ids:
             m = np.asarray(vecs, dtype=np.float32)
-            norms = np.linalg.norm(m, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            mat = m / norms
+            # Centrar quita la parte "generica" que comparten todos los vectores y separa mucho mejor
+            if table == "facts":
+                mu = m.mean(axis=0) * (len(ids) / (len(ids) + CENTER_PRIOR))
+            else:
+                mu = self._load_vectors(namespace, "facts")[3]  # el sotano usa la media de la biblioteca
+            mat = self._unit(m, mu)
         else:
             mat = vecs
-        data = (ids, mat, {fid: n for n, fid in enumerate(ids)})
+        data = (ids, mat, {fid: n for n, fid in enumerate(ids)}, mu)
         self._cache[key] = data
+        self._built_n[key] = len(ids)
         return data
 
     def _cache_add(self, namespace, fid, vec):
         """Agrega un recuerdo nuevo a la cache sin reconstruirla."""
-        entry = self._cache.get((namespace, "facts"))
+        key = (namespace, "facts")
+        entry = self._cache.get(key)
         if entry is not None:
-            ids, mat, idx = entry
-            dim = len(mat[0]) if len(ids) else len(vec)
-            if len(vec) == dim:
-                if np is not None:
-                    v = np.asarray(vec, dtype=np.float32)
-                    n = float(np.linalg.norm(v))
-                    v = v / n if n else v
-                    mat = v.reshape(1, -1) if not len(ids) else np.vstack([mat, v])
-                else:
-                    mat = list(mat) + [vec]
+            ids, mat, idx, mu = entry
+            n_after = len(ids) + 1
+            if n_after < CACHE_REBUILD_BELOW or n_after > 1.25 * self._built_n.get(key, 0):
+                # la media usada para centrar ya no representa a la memoria: se reconstruye en la siguiente consulta
+                del self._cache[key]
+            elif np is not None and len(vec) == mat.shape[1]:
+                v = self._unit(np.asarray(vec, dtype=np.float32), mu).reshape(1, -1)
                 idx = dict(idx)
                 idx[fid] = len(ids)
-                self._cache[(namespace, "facts")] = (ids + [fid], mat, idx)
+                self._cache[key] = (ids + [fid], np.vstack([mat, v]), idx, mu)
+            elif np is None and len(vec) == len(mat[0]):
+                idx = dict(idx)
+                idx[fid] = len(ids)
+                self._cache[key] = (ids + [fid], list(mat) + [vec], idx, mu)
         self._sync_version()
 
     def _sims(self, vec, namespace, table="facts"):
-        ids, mat, _ = self._load_vectors(namespace, table)
+        ids, mat, _idx, mu = self._load_vectors(namespace, table)
         if not ids:
             return ids, []
         if np is not None:
             q = np.asarray(vec, dtype=np.float32)
             if q.shape[0] != mat.shape[1]:
                 return ids, np.zeros(len(ids), dtype=np.float32)
-            n = float(np.linalg.norm(q))
-            if n == 0:
-                return ids, np.zeros(len(ids), dtype=np.float32)
-            return ids, mat @ (q / n)
+            return ids, mat @ self._unit(q, mu)
         return ids, [self.calc_sim(vec, v) for v in mat]
 
     def _top(self, ids, sims, k, min_sim):
@@ -451,9 +539,10 @@ class MemHolograficEngine:
         """Suma las crestas, descarta los valles y repite con los mejores hasta quedar con pocos."""
         # Ronda 1: las crestas se suman (un recuerdo que sale en varias ondas pesa mas)
         score, best = {}, {}
-        for wave in waves:
+        for n_wave, wave in enumerate(waves):
+            weight = 1.0 if n_wave == 0 else ANGLE_WEIGHT  # la pregunta pesa mas que sus angulos
             for fid, s in wave:
-                score[fid] = score.get(fid, 0.0) + s
+                score[fid] = score.get(fid, 0.0) + weight * s
                 best[fid] = max(best.get(fid, 0.0), s)
         if not score:
             return []
@@ -472,7 +561,7 @@ class MemHolograficEngine:
                     norm[nid] = 0.5 * norm[parent] * lsim
                     raw[nid] = lsim
         # Ronda 2: los 3 mejores se vuelven las nuevas piedras; gana quien mas se parece a ellos
-        ids, mat, idx = self._load_vectors(namespace, table)
+        ids, mat, idx, _mu = self._load_vectors(namespace, table)
         final = {}
         for f, n in norm.items():
             others = [t for t in top3 if t != f and t in idx]
@@ -549,7 +638,7 @@ class MemHolograficEngine:
                     continue
                 new_energy = float(energy if energy is not None else 0.5) * (rate ** days)
                 if new_energy < floor:
-                    cursor.execute("INSERT INTO archived_facts (namespace, content, energy, embedding) VALUES (?, ?, ?, ?)", (namespace, content, new_energy, emb))
+                    cursor.execute("INSERT INTO archived_facts (namespace, content, energy, embedding, reason) VALUES (?, ?, ?, ?, 'desuso')", (namespace, content, new_energy, emb))
                     cursor.execute("DELETE FROM facts WHERE id=?", (fid,))
                     cursor.execute("DELETE FROM fact_topics WHERE fact_id=?", (fid,))
                     cursor.execute("DELETE FROM links WHERE fact_a=? OR fact_b=?", (fid, fid))
@@ -585,7 +674,7 @@ class MemHolograficEngine:
 
     def _link_facts(self, namespace):
         """Enlaza recuerdos parecidos SIN modificarlos. Si se contradicen, el mas viejo pasa al sotano."""
-        ids, mat, _ = self._load_vectors(namespace, "facts")
+        ids, mat, _idx, _mu = self._load_vectors(namespace, "facts")
         if len(ids) < 2:
             return 0, 0, 0
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -610,8 +699,10 @@ class MemHolograficEngine:
                     kind = prev
                 elif checks < DREAM_MAX_CHECKS:
                     checks += 1
-                    verdict = self._ask_llm_conflict(meta[a][0], meta[b][0])
-                    kind = "contradice" if "CONTRADICTORIO" in verdict else "similar"
+                    v1 = self._ask_llm_conflict(meta[a][0], meta[b][0])
+                    v2 = self._ask_llm_conflict(meta[b][0], meta[a][0]) if "CONTRADICTORIO" in v1 else v1
+                    # un modelo chico se equivoca: solo cuenta como contradiccion si lo dice en los dos ordenes
+                    kind = "contradice" if ("CONTRADICTORIO" in v1 and "CONTRADICTORIO" in v2) else "similar"
             if kind == "contradice" and not meta[a][1] and not meta[b][1]:
                 archive.add(a)  # gana el mas nuevo; el viejo no se borra, baja al sotano
                 contradictions += 1
@@ -628,7 +719,7 @@ class MemHolograficEngine:
             for fid in archive:
                 row = cur.execute("SELECT namespace, content, energy, embedding FROM facts WHERE id=?", (fid,)).fetchone()
                 if row:
-                    cur.execute("INSERT INTO archived_facts (namespace, content, energy, embedding) VALUES (?, ?, ?, ?)", row)
+                    cur.execute("INSERT INTO archived_facts (namespace, content, energy, embedding, reason) VALUES (?, ?, ?, ?, 'contradiccion')", row)
                     cur.execute("DELETE FROM facts WHERE id=?", (fid,))
                     cur.execute("DELETE FROM fact_topics WHERE fact_id=?", (fid,))
             cur.execute("DELETE FROM links WHERE fact_a IN (SELECT id FROM facts WHERE namespace=?) OR fact_b IN (SELECT id FROM facts WHERE namespace=?)", (namespace, namespace))

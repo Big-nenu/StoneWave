@@ -12,6 +12,12 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mem_engine import MemHolograficEngine
+import mem_engine
+
+mem_engine.CENTER_PRIOR = 10 ** 9  # sin centrado: los embeddings falsos no lo necesitan
+# Umbrales para similitud coseno cruda (los embeddings falsos no estan centrados)
+mem_engine.WEAK_MATCH, mem_engine.MIN_SIM, mem_engine.WAVE_MIN_SIM = 0.65, 0.5, 0.45
+mem_engine.DUPLICATE_SIM, mem_engine.CONFLICT_SIM, mem_engine.RELATED_SIM = 0.95, 0.8, 0.6
 
 
 def fake_embedding(text):

@@ -34,13 +34,22 @@ El sueño es el que prepara el estanque (temas, enlaces entre recuerdos) para qu
 
 ## ¿Cómo funciona hoy?
 
-Cada recuerdo es un texto con su vector (embedding), una energía y un tema.
+Cada recuerdo es un texto con su vector (embedding), una energía y, opcionalmente, un tema.
 
-- **Guardar:** si un recuerdo nuevo es muy parecido a uno existente (similitud > 0.8), un modelo decide si lo contradice. Si lo contradice, se guarda aparte. Si no, se **fusionan** y sube su energía. Cada recuerdo se clasifica por tema.
-- **Consultar:** búsqueda por similitud semántica solo entre recuerdos del mismo tema. Devuelve los 3 más parecidos.
-- **Sótano:** los recuerdos contradichos durante el sueño se archivan (`archived_facts`). Si una consulta no encuentra nada en la memoria activa, busca en el sótano y **resucita** el recuerdo.
-- **Sueño:** `force_dream` fusiona recuerdos muy parecidos y archiva los contradictorios.
+- **Guardar (`inject_memory`):** es rápido y no usa modelos de lenguaje. Si ya existe un recuerdo casi idéntico (similitud ≥ 0.95) solo le sube la energía. Si no, guarda uno nuevo. **Nunca reescribe ni fusiona recuerdos.** Con `fijo=true` el recuerdo es de identidad: no decae y nunca se archiva.
+- **Consultar (`query_memory`):** lanza las **5 piedras** (la pregunta y hasta 4 ángulos sacados de ella) en una sola llamada de embeddings. Cada piedra trae su onda de recuerdos parecidos. Primera ronda: las crestas se suman y los valles se descartan. Los recuerdos enlazados por el sueño se agregan a los candidatos. Segunda ronda: los 3 mejores se vuelven las nuevas piedras y gana quien más se parece a ellos. Devuelve hasta 3 resultados.
+- **Sótano:** si la mejor coincidencia de la biblioteca es débil (< 0.65), las piedras también bajan al sótano y el Bibliotecario **resucita** el recuerdo.
+- **Sueño (`force_dream`):** (1) baja al sótano lo que lleva tiempo sin usarse, (2) clasifica por tema los recuerdos nuevos, (3) enlaza los recuerdos parecidos sin modificarlos y (4) si dos recuerdos se contradicen, el más viejo baja al sótano.
 - **Reflexión:** `trigger_reflection` genera una intuición a partir de los recuerdos con más energía y la guarda como recuerdo nuevo.
+
+### ¿Por qué es rápida?
+
+- Los vectores viven en una matriz de numpy en memoria; una consulta es una multiplicación de matrices, no un ciclo en Python.
+- Las 5 piedras piden sus embeddings en **una sola llamada** a Ollama.
+- Guardar y consultar no llaman a ningún modelo de lenguaje. Los modelos solo se usan en el sueño.
+- La cache se actualiza sola si otro proceso (por ejemplo la CLI) cambia la base de datos.
+- Medido con 5,000 recuerdos de 768 dimensiones (sin contar Ollama): consulta ≈ 3 ms, guardar ≈ 20 ms. Prueba tú mismo: `python tests/bench_speed.py`.
+- Sin numpy funciona igual, pero mucho más lento.
 
 ## Requisitos
 
@@ -53,7 +62,7 @@ Cada recuerdo es un texto con su vector (embedding), una energía y un tema.
 ```bash
 git clone https://github.com/Big-nenu/MemHolografic.git
 cd MemHolografic
-pip install mcp requests
+pip install mcp requests numpy
 ```
 
 Modelos de Ollama:
@@ -105,7 +114,9 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `MEMHOLOGRAFIC_NAMESPACE` | `default` | Etiqueta para separar memorias (ej. `trabajo`, `personal`). No es una ruta |
 | `MEMHOLOGRAFIC_EMBED_MODEL` | `embeddinggemma-2:270m` | Modelo de embeddings |
 | `MEMHOLOGRAFIC_LLM_MODEL` | `tev1:0.8b` | Modelo de decisión (temas y contradicciones) |
-| `MEMHOLOGRAFIC_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que fusiona y reflexiona |
+| `MEMHOLOGRAFIC_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
+| `MEMHOLOGRAFIC_STONES` | `5` | Piedras por consulta |
+| `MEMHOLOGRAFIC_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (más ángulos buenos, pero más lento) |
 | `MEMHOLOGRAFIC_GRAPH_ENABLED` | `false` | Activa `generate_graph` |
 
 Se ponen dentro de `"env": { ... }` en la config del servidor.
@@ -119,7 +130,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `list_memories` | Lista lo que ya se sabe del usuario (se llama al inicio de cada chat) |
 | `query_memory` | Busca recuerdos relacionados con un tema |
 | `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |
-| `force_dream` | Consolida la memoria y archiva lo poco relevante |
+| `force_dream` | Sueño: archiva lo que no se usa, clasifica por tema y enlaza recuerdos parecidos |
 | `trigger_reflection` | Genera una intuición nueva |
 | `generate_graph` | Grafo HTML de entidades y relaciones (requiere `MEMHOLOGRAFIC_GRAPH_ENABLED=true`) |
 | `clear_memory` | Borra todo el namespace (irreversible) |
@@ -139,7 +150,7 @@ En una conversación nueva con Cline pregunta: *"¿Qué sabes de mí?"*. Si no r
 
 - **"Connection closed" / servidor en rojo:** el script falla al arrancar. Ejecútalo a mano (`python mcp_server.py`) y lee el error.
 - **`spawn ENOENT`:** Cline no encuentra `python`. Usa la ruta completa (`where python` en Windows).
-- **`No module named 'mcp'`:** instala con `pip install mcp requests` en el mismo Python que usa Cline.
+- **`No module named 'mcp'`:** instala con `pip install mcp requests numpy` en el mismo Python que usa Cline.
 - **Dice que la memoria está vacía:** casi siempre es otra ruta de BD u otro namespace en la config.
 
 ## Estructura
@@ -149,7 +160,7 @@ mcp_server.py    # servidor MCP
 mem_engine.py    # motor de memoria (inyectar, consultar, soñar, reflexionar)
 graph_engine.py  # grafo de entidades (opcional)
 mem_cli.py       # CLI
-tests/           # pruebas y benchmark
+tests/           # test_engine.py (pruebas sin Ollama), bench_speed.py (velocidad)
 docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 ```
 
@@ -160,12 +171,17 @@ docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 | Biblioteca con energía, temas y namespaces | Hecho |
 | Sótano y resurrección | Hecho |
 | Decaimiento de energía por falta de uso (solo dentro del sueño) | Hecho |
-| La consulta baja al sótano si la coincidencia es débil (`WEAK_MATCH = 0.65`) | Hecho, falta probar con Ollama y ajustar el valor |
-| Recuerdos fijos (`fijo=true`): no decaen, no se archivan y salen primero en `list_memories` | Hecho, falta probar con Ollama |
-| Sueño que organiza y enlaza recuerdos en vez de fusionarlos y reescribirlos | Pendiente |
-| Consulta por ondas (5 → 3 → 1 piedras) | Pendiente |
+| La consulta baja al sótano si la coincidencia es débil | Hecho |
+| Recuerdos fijos (`fijo=true`) | Hecho |
+| Velocidad: cache de vectores con numpy, embeddings en lote, guardar sin LLM | Hecho |
+| Sueño que ordena y enlaza sin reescribir; las contradicciones bajan al sótano | Hecho |
+| Consulta por ondas (5 piedras, crestas y valles, segunda ronda) | Hecho |
+| Probar todo con Ollama real y ajustar los umbrales (0.65, 0.95, 0.8, 0.6) | Pendiente |
+| Ángulos de las piedras con LLM (`MEMHOLOGRAFIC_STONES_LLM`) | Hecho, apagado por defecto; falta probar si mejora |
+| Benchmark de preguntas y respuestas (MemBench). El `benchmark_runner.py` actual mide fusión y quedó viejo | Pendiente |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |
-| Benchmark de preguntas y respuestas (MemBench) | Pendiente |
-| Índice vectorial opcional (`faiss-cpu` / `chromadb`) para miles de recuerdos | Idea |
+| Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |
+
+**Límites conocidos:** las contradicciones ya no se detectan al guardar sino en el sueño, así que entre un guardado y el siguiente sueño pueden coexistir dos datos que se contradicen. El 0.65 y los demás umbrales están puestos a ojo.
 
 La historia completa del diseño y los experimentos está en [`docs/BITACORA.md`](docs/BITACORA.md).

@@ -1,6 +1,7 @@
 import contextlib
 import os
 import sys
+import threading
 import webbrowser
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
@@ -21,12 +22,15 @@ INSTRUCTIONS = (
     "Memoria persistente del usuario entre conversaciones. "
     "AL INICIO de cada conversación llama list_memories antes de responder. "
     "Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama inject_memory. "
+    "Si el dato es de identidad (nombre, carrera, familia, dónde vive o trabaja), llama inject_memory con fijo=true para que nunca se olvide. "
     "Antes de responder sobre el usuario o su historial, llama query_memory. "
     "Si el usuario quiere ver el grafo de relaciones de su memoria, llama generate_graph (requiere MEMHOLOGRAFIC_GRAPH_ENABLED=true)."
 )
 
 mcp = FastMCP("MemHolografic", instructions=INSTRUCTIONS)
 engine = MemHolograficEngine(db_path=DB_PATH)
+# Calienta la cache de vectores en segundo plano para que la primera consulta no se sienta lenta
+threading.Thread(target=lambda: engine._load_vectors(NS, "facts"), daemon=True).start()
 
 def _quiet():
     return contextlib.redirect_stdout(sys.stderr)
@@ -69,7 +73,7 @@ def inject_memory(content: str, energy: float = 0.5, fijo: bool = False) -> str:
 
 @mcp.tool()
 def force_dream() -> str:
-    """Mantenimiento: consolida la memoria y manda lo poco relevante al sótano."""
+    """Sueño: baja al sótano lo que no se usa, clasifica por temas y enlaza recuerdos parecidos (no reescribe nada)."""
     with _quiet():
         result = engine.dream(namespace=NS)
     return str(result) if result is not None else "El proceso de sueño no generó resultados."

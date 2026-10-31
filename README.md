@@ -3,7 +3,36 @@
 Memoria persistente para agentes de IA (Cline, Claude Desktop, etc.) mediante un servidor **MCP**.
 Todo corre en local: SQLite + [Ollama](https://ollama.com). Sin nube.
 
-## ¿Cómo funciona?
+## La idea
+
+MemHolografic nace de mezclar dos memorias que le gustaron a su autor:
+
+- **Holographic** (de Hermes): hechos con entidades y confianza.
+- **MemFS**: una memoria que se mejora sola mientras la IA no se está usando (el "sueño").
+
+Cuatro piezas:
+
+| Pieza | Qué es |
+|---|---|
+| **Biblioteca** (`facts`) | Los recuerdos activos, los que se usan. |
+| **Sótano** (`archived_facts`) | Recuerdos que llevan tiempo sin usarse o perdieron energía. Nunca se borran, esperan ahí. |
+| **Sueño** (`dream`) | Se ejecuta cuando no se usa la IA. Revisa la memoria, la ordena y manda lo viejo al sótano. |
+| **Ondas / piedras** | La forma de consultar (ver abajo). |
+
+### Consulta por ondas (las 5 piedras)
+
+En vez de buscar en todo el estanque con una sola onda:
+
+1. La pregunta lanza **5 piedras**: 5 búsquedas, cada una con un ángulo específico de la pregunta.
+2. Cada piedra trae sus recuerdos más parecidos (su onda).
+3. **Crestas:** los recuerdos que aparecen en varias ondas se suman. **Valles:** los que solo aparecen en una se descartan.
+4. Se repite: de 5 ondas quedan 3, de 3 queda 1, y esa es la respuesta.
+
+Los recuerdos **no se modifican** al consultar. Si la biblioteca no tiene nada bueno, las piedras bajan al sótano y el recuerdo se **resucita**.
+
+El sueño es el que prepara el estanque (temas, enlaces entre recuerdos) para que las piedras sepan dónde caer.
+
+## ¿Cómo funciona hoy?
 
 Cada recuerdo es un texto con su vector (embedding), una energía y un tema.
 
@@ -124,11 +153,19 @@ tests/           # pruebas y benchmark
 docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 ```
 
-## Roadmap (ideas, aún no implementado)
+## Estado y pendientes
 
-- [ ] La energía debería bajar con el tiempo y contar al buscar
-- [ ] Búsqueda de puentes semánticos entre temas distintos
-- [ ] Benchmark (MemBench) con dataset de redundancias, complementos y contradicciones
-- [ ] Índice vectorial opcional (`faiss-cpu` / `chromadb`) para miles de recuerdos
+| Punto | Estado |
+|---|---|
+| Biblioteca con energía, temas y namespaces | Hecho |
+| Sótano y resurrección | Hecho |
+| Decaimiento de energía por falta de uso (solo dentro del sueño) | Hecho |
+| La consulta baja al sótano si la coincidencia es débil (`WEAK_MATCH = 0.65`) | Hecho, falta probar con Ollama y ajustar el valor |
+| Recuerdos fijos (identidad) que no caigan al sótano | Pendiente |
+| Sueño que organiza y enlaza recuerdos en vez de fusionarlos y reescribirlos | Pendiente |
+| Consulta por ondas (5 → 3 → 1 piedras) | Pendiente |
+| Búsqueda de puentes semánticos entre temas distintos | Idea |
+| Benchmark de preguntas y respuestas (MemBench) | Pendiente |
+| Índice vectorial opcional (`faiss-cpu` / `chromadb`) para miles de recuerdos | Idea |
 
 La historia completa del diseño y los experimentos está en [`docs/BITACORA.md`](docs/BITACORA.md).

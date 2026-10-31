@@ -18,6 +18,9 @@ EMBEDDING_MODEL = os.getenv("MEMHOLOGRAFIC_EMBED_MODEL", "embeddinggemma-2:270m"
 LLM_MODEL = os.getenv("MEMHOLOGRAFIC_LLM_MODEL", "tev1:0.8b")
 SYNTHESIS_MODEL = os.getenv("MEMHOLOGRAFIC_SYNTHESIS_MODEL", "qwen2.5:0.5b")
 
+# Si la mejor coincidencia de la biblioteca es menor a esto, tambien se busca en el sotano
+WEAK_MATCH = 0.65
+
 CLASSIFICATION_TOPICS = [
     "identidad", "proyecto", "trabajo", "estudios", "tecnologia",
     "fisica", "mecanica_cuantica", "astrofisica", "ciberseguridad",
@@ -271,7 +274,8 @@ class MemHolograficEngine:
                     if sim > 0.5:
                         results.append((sim, fid, fenergy, fcontent))
                 except: continue
-            if results:
+            best_active = max((r[0] for r in results), default=0.0)
+            if results and best_active >= WEAK_MATCH:
                 results.sort(key=lambda x: x[0] * (0.5 + 0.5 * min(float(x[2] or 0), 1.0)), reverse=True)
                 top = results[:3]
                 now = time.time()
@@ -290,7 +294,7 @@ class MemHolograficEngine:
                     if sim > 0.5:
                         archived_results.append((sim, fid, fenergy, fcontent))
                 except: continue
-            if archived_results:
+            if archived_results and max(a[0] for a in archived_results) > best_active:
                 archived_results.sort(key=lambda x: x[0], reverse=True)
                 best_sim, best_id, best_energy, best_content = archived_results[0]
                 cursor.execute("SELECT embedding FROM archived_facts WHERE id=?", (best_id,))
@@ -300,6 +304,9 @@ class MemHolograficEngine:
                 cursor.execute("DELETE FROM archived_facts WHERE id=?", (best_id,))
                 conn.commit()
                 return [(best_sim, -1, best_energy + 0.2, best_content)]
+            if results:
+                results.sort(key=lambda x: x[0], reverse=True)
+                return results[:3]
             return "No related memories found."
 
     def decay(self, namespace="default", rate=0.95, floor=0.15):

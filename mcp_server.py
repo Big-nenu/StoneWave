@@ -44,8 +44,6 @@ def _all_memories(limit: int = 30) -> str:
 @mcp.tool()
 def list_memories(limit: int = 30) -> str:
     """LLAMA ESTO AL INICIO de CADA CONVERSACIÓN. Devuelve lo que ya se sabe del usuario."""
-    with _quiet():
-        engine.decay(namespace=NS)
     return _all_memories(limit)
 
 @mcp.tool()

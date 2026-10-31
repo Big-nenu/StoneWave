@@ -10,6 +10,8 @@ def main():
     parser.add_argument("-n", "--namespace", default="default", help="Namespace/Proyecto para la operación (default: 'default')")
     parser.add_argument("-e", "--energy", type=float, default=0.5, help="Energía inicial para la inyección (default: 0.5)")
 
+    parser.add_argument("-f", "--fijo", action="store_true", help="Recuerdo fijo: no decae ni se archiva")
+
     args = parser.parse_args()
     
     # Ruta profesional dinámica
@@ -20,7 +22,7 @@ def main():
         if not args.text:
             print("Error: El comando 'inject' requiere un texto.")
             return
-        print(engine.inject(args.text, energy=args.energy, namespace=args.namespace))
+        print(engine.inject(args.text, energy=args.energy, namespace=args.namespace, pinned=args.fijo))
     
     elif args.command == "query":
         if not args.text:

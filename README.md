@@ -118,7 +118,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 |---|---|
 | `list_memories` | Lista lo que ya se sabe del usuario (se llama al inicio de cada chat) |
 | `query_memory` | Busca recuerdos relacionados con un tema |
-| `inject_memory` | Guarda un dato duradero |
+| `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |
 | `force_dream` | Consolida la memoria y archiva lo poco relevante |
 | `trigger_reflection` | Genera una intuición nueva |
 | `generate_graph` | Grafo HTML de entidades y relaciones (requiere `MEMHOLOGRAFIC_GRAPH_ENABLED=true`) |
@@ -161,7 +161,7 @@ docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 | Sótano y resurrección | Hecho |
 | Decaimiento de energía por falta de uso (solo dentro del sueño) | Hecho |
 | La consulta baja al sótano si la coincidencia es débil (`WEAK_MATCH = 0.65`) | Hecho, falta probar con Ollama y ajustar el valor |
-| Recuerdos fijos (identidad) que no caigan al sótano | Pendiente |
+| Recuerdos fijos (`fijo=true`): no decaen, no se archivan y salen primero en `list_memories` | Hecho, falta probar con Ollama |
 | Sueño que organiza y enlaza recuerdos en vez de fusionarlos y reescribirlos | Pendiente |
 | Consulta por ondas (5 → 3 → 1 piedras) | Pendiente |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |

@@ -51,6 +51,8 @@ class MemHolograficEngine:
             if "last_used" not in cols:
                 cursor.execute("ALTER TABLE facts ADD COLUMN last_used REAL")
                 cursor.execute("UPDATE facts SET last_used=?", (time.time(),))
+            if "pinned" not in cols:
+                cursor.execute("ALTER TABLE facts ADD COLUMN pinned INTEGER DEFAULT 0")
             for topic in CLASSIFICATION_TOPICS:
                 cursor.execute("INSERT OR IGNORE INTO topics (topic_name, description) VALUES (?, ?)", (topic, f"Tema: {topic}"))
             cursor.execute("CREATE TABLE IF NOT EXISTS entities (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE NOT NULL, tipo TEXT, embedding TEXT)")
@@ -189,7 +191,7 @@ class MemHolograficEngine:
     def merge_waves(self, t1, t2):
         return self._ask_llm_synthesis(t1, t2)
 
-    def inject(self, content, energy=0.5, namespace="default"):
+    def inject(self, content, energy=0.5, namespace="default", pinned=False):
         vec = self.get_embedding(content)
         if vec is None:
             return "❌ ERROR: No se obtuvo embedding."
@@ -218,6 +220,8 @@ class MemHolograficEngine:
                     if "CONTRADICTORIO" in decision:
                         cursor.execute("INSERT INTO facts (namespace, content, energy, embedding, last_used) VALUES (?, ?, ?, ?, ?)", (namespace, content, energy, json.dumps(vec), time.time()))
                         fact_id = cursor.lastrowid
+                        if pinned:
+                            cursor.execute("UPDATE facts SET pinned=1 WHERE id=?", (fact_id,))
                         topics = self.classify_topics(content)
                         self._store_topics(cursor, fact_id, topics)
                         conn.commit()
@@ -231,6 +235,8 @@ class MemHolograficEngine:
                     cursor.execute("DELETE FROM fact_topics WHERE fact_id=?", (best_collision_id,))
                     new_topics = self.classify_topics(new_content)
                     self._store_topics(cursor, best_collision_id, new_topics)
+                    if pinned:
+                        cursor.execute("UPDATE facts SET pinned=1 WHERE id=?", (best_collision_id,))
                     conn.commit()
                     if new_topics:
                         return f"🌊 COLISION con ID {best_collision_id}! Sim: {max_sim:.2f} Energy: {new_energy:.2f} Temas: {', '.join(new_topics)}"
@@ -238,6 +244,8 @@ class MemHolograficEngine:
             else:
                 cursor.execute("INSERT INTO facts (namespace, content, energy, embedding, last_used) VALUES (?, ?, ?, ?, ?)", (namespace, content, energy, json.dumps(vec), time.time()))
                 fact_id = cursor.lastrowid
+                if pinned:
+                    cursor.execute("UPDATE facts SET pinned=1 WHERE id=?", (fact_id,))
                 topics = self.classify_topics(content)
                 self._store_topics(cursor, fact_id, topics)
                 conn.commit()
@@ -315,7 +323,7 @@ class MemHolograficEngine:
         archived = 0
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, content, energy, embedding, last_used FROM facts WHERE namespace=?", (namespace,))
+            cursor.execute("SELECT id, content, energy, embedding, last_used FROM facts WHERE namespace=? AND COALESCE(pinned,0)=0", (namespace,))
             for fid, content, energy, emb, last_used in cursor.fetchall():
                 days = max(0.0, (now - (last_used or now)) / 86400)
                 if days < 0.05:
@@ -334,14 +342,14 @@ class MemHolograficEngine:
     def get_all_facts(self, namespace="default"):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT content FROM facts WHERE namespace=? ORDER BY energy DESC", (namespace,))
+            cursor.execute("SELECT content FROM facts WHERE namespace=? ORDER BY COALESCE(pinned,0) DESC, energy DESC", (namespace,))
             return [r[0] for r in cursor.fetchall()]
 
     def dream(self, namespace="default"):
         self.decay(namespace)
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, content, embedding, energy FROM facts WHERE namespace=?", (namespace,))
+            cursor.execute("SELECT id, content, embedding, energy FROM facts WHERE namespace=? AND COALESCE(pinned,0)=0", (namespace,))
             facts = cursor.fetchall()
             if len(facts) < 2: return "No hay suficientes datos para soñar."
             

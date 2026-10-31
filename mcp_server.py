@@ -61,10 +61,10 @@ def query_memory(text: str) -> str:
     return f"Recuerdos encontrados:\n{lines}"
 
 @mcp.tool()
-def inject_memory(content: str, energy: float = 0.5) -> str:
-    """Guarda un dato duradero: preferencia, decisión, dato personal o técnico."""
+def inject_memory(content: str, energy: float = 0.5, fijo: bool = False) -> str:
+    """Guarda un dato duradero: preferencia, decisión, dato personal o técnico. Usa fijo=true para identidad (nombre, carrera, familia): nunca decae ni se archiva."""
     with _quiet():
-        result = engine.inject(content, energy=energy, namespace=NS)
+        result = engine.inject(content, energy=energy, namespace=NS, pinned=fijo)
     return str(result) if result is not None else "No se pudo guardar."
 
 @mcp.tool()

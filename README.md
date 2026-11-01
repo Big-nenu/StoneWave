@@ -347,6 +347,7 @@ graph_engine.py  # grafo de entidades (opcional)
 mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor)
 doctor.py        # reporte de salud de la memoria (solo lectura)
 api.py           # API HTTP local (solo biblioteca estandar)
+LICENSE          # licencia MIT
 scripts/         # benchmark_stones.py: MemBench (esqueleto de benchmark)
 tests/           # test_engine.py, test_api.py, test_doctor.py y test_benchmark.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
 docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
@@ -394,5 +395,9 @@ python tests/test_benchmark.py
 ```
 
 Con Ollama encendido también: `python tests/real_test.py` y `python scripts/benchmark_stones.py`.
+
+## Licencia
+
+MIT. Consulta el archivo [`LICENSE`](LICENSE).
 
 La historia completa del diseño y los experimentos está en [`docs/BITACORA.md`](docs/BITACORA.md).

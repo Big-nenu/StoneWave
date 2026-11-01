@@ -83,8 +83,8 @@ Sobre las piedras, con esta muestra chica: en preguntas de un solo hecho una pie
 ## Instalación
 
 ```bash
-git clone https://github.com/Big-nenu/MemHolografic.git
-cd MemHolografic
+git clone https://github.com/Big-nenu/StoneWave.git
+cd StoneWave
 pip install mcp requests numpy
 ```
 
@@ -146,8 +146,8 @@ En tu carpeta de usuario, **fuera del repositorio**:
 
 | Sistema | Ruta |
 |---|---|
-| Windows | `C:\Users\TuUsuario\.memholografic\memoria.db` |
-| Linux / macOS | `~/.memholografic/memoria.db` |
+| Windows | `C:\Users\TuUsuario\.stonewave\memoria.db` |
+| Linux / macOS | `~/.stonewave/memoria.db` |
 
 Puedes borrar o mover el proyecto sin perder tus recuerdos.
 
@@ -155,17 +155,19 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 
 | Variable | Default | Para qué sirve |
 |---|---|---|
-| `MEMHOLOGRAFIC_DB` | `~/.memholografic/memoria.db` | Ruta **absoluta** de la base de datos |
-| `MEMHOLOGRAFIC_NAMESPACE` | `default` | Etiqueta para separar memorias (ej. `trabajo`, `personal`). No es una ruta |
-| `MEMHOLOGRAFIC_EMBED_MODEL` | `embeddinggemma-2:270m` | Modelo de embeddings |
-| `MEMHOLOGRAFIC_LLM_MODEL` | `tev1:0.8b` | Modelo de decisión (temas y contradicciones) |
-| `MEMHOLOGRAFIC_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
-| `MEMHOLOGRAFIC_STONES` | `5` | Piedras por consulta |
-| `MEMHOLOGRAFIC_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (en las pruebas salió peor y más lento) |
-| `MEMHOLOGRAFIC_QUERY_PREFIX` / `MEMHOLOGRAFIC_DOC_PREFIX` | según el modelo | Prefijos de pregunta y documento. Se ponen solos para `embeddinggemma` y `nomic-embed-text` |
-| `MEMHOLOGRAFIC_GRAPH_ENABLED` | `false` | Activa `generate_graph` |
+| `STONEWAVE_DB` | `~/.stonewave/memoria.db` | Ruta **absoluta** de la base de datos |
+| `STONEWAVE_NAMESPACE` | `default` | Etiqueta para separar memorias (ej. `trabajo`, `personal`). No es una ruta |
+| `STONEWAVE_EMBED_MODEL` | `embeddinggemma-2:270m` | Modelo de embeddings |
+| `STONEWAVE_LLM_MODEL` | `tev1:0.8b` | Modelo de decisión (temas y contradicciones) |
+| `STONEWAVE_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
+| `STONEWAVE_STONES` | `5` | Piedras por consulta |
+| `STONEWAVE_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (en las pruebas salió peor y más lento) |
+| `STONEWAVE_QUERY_PREFIX` / `STONEWAVE_DOC_PREFIX` | según el modelo | Prefijos de pregunta y documento. Se ponen solos para `embeddinggemma` y `nomic-embed-text` |
+| `STONEWAVE_GRAPH_ENABLED` | `false` | Activa `generate_graph` |
 
 Se ponen dentro de `"env": { ... }` en la config del servidor.
+
+> Los nombres anteriores (`MEMHOLOGRAFIC_*`) siguen funcionando. Si ya tenías memoria en `~/.memholografic`, al arrancar se copia a `~/.stonewave` y la carpeta anterior queda de respaldo.
 
 > ⚠️ Si cambias el namespace, solo verás los recuerdos guardados con ese namespace.
 
@@ -178,7 +180,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |
 | `force_dream` | Sueño: archiva lo que no se usa, clasifica por tema y enlaza recuerdos parecidos |
 | `trigger_reflection` | Genera una intuición nueva |
-| `generate_graph` | Grafo HTML de entidades y relaciones (requiere `MEMHOLOGRAFIC_GRAPH_ENABLED=true`) |
+| `generate_graph` | Grafo HTML de entidades y relaciones (requiere `STONEWAVE_GRAPH_ENABLED=true`) |
 | `clear_memory` | Borra todo el namespace (irreversible) |
 
 También hay una CLI: `python mem_cli.py inject|query|dream|reflect|clear`.
@@ -189,7 +191,7 @@ En una conversación nueva con tu agente pregunta: *"¿Qué sabes de mí?"*. Si 
 
 1. Revisa que Ollama esté corriendo y los modelos descargados (`ollama list`).
 2. Revisa que el servidor esté conectado (en verde) en tu agente.
-3. Revisa que no hayas puesto un `MEMHOLOGRAFIC_NAMESPACE` o `MEMHOLOGRAFIC_DB` distinto al que usaste al guardar.
+3. Revisa que no hayas puesto un `STONEWAVE_NAMESPACE` o `STONEWAVE_DB` distinto al que usaste al guardar.
 4. Prueba el servidor a mano para ver errores: `python mcp_server.py`.
 
 ## Errores comunes

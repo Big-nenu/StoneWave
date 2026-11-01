@@ -10,13 +10,13 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 import mem_engine
-from mem_engine import StoneWaveEngine
+from mem_engine import StoneWaveEngine, env_var
 from graph_engine import GraphEngine
 
 # Configuración de Rutas Profesionales
-DB_PATH = os.getenv("MEMHOLOGRAFIC_DB", str(Path.home() / ".memholografic" / "memoria.db"))
-NS = os.getenv("MEMHOLOGRAFIC_NAMESPACE", "default")
-GRAPH_ENABLED = os.getenv("MEMHOLOGRAFIC_GRAPH_ENABLED", "false").lower() == "true"
+DB_PATH = env_var("DB")  # si no hay, el motor usa ~/.stonewave/memoria.db
+NS = env_var("NAMESPACE", "default")
+GRAPH_ENABLED = env_var("GRAPH_ENABLED", "false").lower() == "true"
 
 INSTRUCTIONS = (
     "Memoria persistente del usuario entre conversaciones. "
@@ -24,7 +24,7 @@ INSTRUCTIONS = (
     "Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama inject_memory. "
     "Si el dato es de identidad (nombre, carrera, familia, dónde vive o trabaja), llama inject_memory con fijo=true para que nunca se olvide. "
     "Antes de responder sobre el usuario o su historial, llama query_memory. "
-    "Si el usuario quiere ver el grafo de relaciones de su memoria, llama generate_graph (requiere MEMHOLOGRAFIC_GRAPH_ENABLED=true)."
+    "Si el usuario quiere ver el grafo de relaciones de su memoria, llama generate_graph (requiere STONEWAVE_GRAPH_ENABLED=true)."
 )
 
 mcp = FastMCP("StoneWave", instructions=INSTRUCTIONS)
@@ -100,7 +100,7 @@ def generate_graph(open_browser: bool = True) -> str:
     if not GRAPH_ENABLED:
         return "El generador de grafo está desactivado."
     
-    graph_engine = GraphEngine(DB_PATH)
+    graph_engine = GraphEngine(engine.db_path)
     with _quiet():
         user_name = os.getlogin()
         resultado = graph_engine.generate_graph_html(namespace=NS, user_name=user_name)

@@ -15,8 +15,7 @@ def main():
     args = parser.parse_args()
     
     # Ruta profesional dinámica
-    db_path = str(Path.home() / ".memholografic" / "memoria.db")
-    engine = StoneWaveEngine(db_path=db_path)
+    engine = StoneWaveEngine()
 
     if args.command == "inject":
         if not args.text:

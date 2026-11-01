@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 
-# Bases de datos y datos locales (la memoria vive en ~/.memholografic)
+# Bases de datos y datos locales (la memoria vive en ~/.stonewave)
 *.db
 *.db-journal
 *.bak

@@ -17,16 +17,35 @@ except ImportError:  # sin numpy funciona igual, solo mas lento
 
 # --- CONFIGURACIÓN DINÁMICA DE RUTAS ---
 USER_HOME = Path.home()
-DEFAULT_MEM_FOLDER = USER_HOME / ".memholografic"
-DEFAULT_DB_PATH = str(DEFAULT_MEM_FOLDER / "memoria.db")
+DEFAULT_MEM_FOLDER = USER_HOME / ".stonewave"
+OLD_MEM_FOLDER = USER_HOME / ".memholografic"  # nombre anterior del proyecto
+
+
+def env_var(name, default=None):
+    """Lee STONEWAVE_<name>; si no existe, usa el nombre anterior MEMHOLOGRAFIC_<name>."""
+    return os.getenv("STONEWAVE_" + name, os.getenv("MEMHOLOGRAFIC_" + name, default))
+
+
+def _default_db_path():
+    """~/.stonewave/memoria.db. Si solo existe la carpeta anterior, copia ahi la memoria (la vieja queda de respaldo)."""
+    new = DEFAULT_MEM_FOLDER / "memoria.db"
+    old = OLD_MEM_FOLDER / "memoria.db"
+    if not new.exists() and old.exists():
+        try:
+            new.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old, new)
+            print(f"StoneWave: memoria copiada de {old} a {new} (la anterior queda de respaldo)", file=sys.stderr)
+        except Exception:
+            return str(old)
+    return str(new)
 
 OLLAMA_URL = "http://localhost:11434/api/embeddings"
 OLLAMA_EMBED_URL = "http://localhost:11434/api/embed"
 OLLAMA_GEN_URL = "http://localhost:11434/api/generate"
 OLLAMA_SYSTEMONE_URL = "http://localhost:11434/v1/systemone"
-EMBEDDING_MODEL = os.getenv("MEMHOLOGRAFIC_EMBED_MODEL", "embeddinggemma-2:270m")
-LLM_MODEL = os.getenv("MEMHOLOGRAFIC_LLM_MODEL", "tev1:0.8b")
-SYNTHESIS_MODEL = os.getenv("MEMHOLOGRAFIC_SYNTHESIS_MODEL", "qwen2.5:0.5b")
+EMBEDDING_MODEL = env_var("EMBED_MODEL", "embeddinggemma-2:270m")
+LLM_MODEL = env_var("LLM_MODEL", "tev1:0.8b")
+SYNTHESIS_MODEL = env_var("SYNTHESIS_MODEL", "qwen2.5:0.5b")
 
 
 def _default_prefixes(model):
@@ -40,15 +59,15 @@ def _default_prefixes(model):
 
 
 _QP, _DP = _default_prefixes(EMBEDDING_MODEL)
-QUERY_PREFIX = os.getenv("MEMHOLOGRAFIC_QUERY_PREFIX", _QP)
-DOC_PREFIX = os.getenv("MEMHOLOGRAFIC_DOC_PREFIX", _DP)
+QUERY_PREFIX = env_var("QUERY_PREFIX", _QP)
+DOC_PREFIX = env_var("DOC_PREFIX", _DP)
 CENTER_PRIOR = 2  # con pocos recuerdos el centrado se suaviza (media * n / (n + 2))
 CACHE_REBUILD_BELOW = 64  # con menos recuerdos que esto, la cache se reconstruye al guardar (la media cambia mucho)
 
 # --- AJUSTES DE LA BÚSQUEDA POR ONDAS ---
 # Los umbrales estan calibrados para vectores centrados (ver tests/real_test.py)
-STONES = int(os.getenv("MEMHOLOGRAFIC_STONES", "5"))                 # piedras por consulta
-STONES_LLM = os.getenv("MEMHOLOGRAFIC_STONES_LLM", "false").lower() == "true"  # ángulos con LLM
+STONES = int(env_var("STONES", "5"))                 # piedras por consulta
+STONES_LLM = env_var("STONES_LLM", "false").lower() == "true"  # ángulos con LLM
 WEAK_MATCH = 0.40  # si la mejor coincidencia de la biblioteca es menor, tambien se busca en el sotano
 MIN_SIM = 0.18  # similitud minima para devolver un recuerdo
 WAVE_MIN_SIM = 0.15  # similitud minima para que una piedra cuente un recuerdo en su onda
@@ -76,7 +95,7 @@ CLASSIFICATION_TOPICS = [
 
 class StoneWaveEngine:
     def __init__(self, db_path=None):
-        self.db_path = db_path if db_path else os.getenv("MEMHOLOGRAFIC_DB", DEFAULT_DB_PATH)
+        self.db_path = db_path if db_path else (env_var("DB") or _default_db_path())
         self._ensure_db_folder()
         self._init_db()
         # Cache de vectores en memoria. Se invalida sola cuando la BD cambia (PRAGMA data_version).

@@ -3,12 +3,13 @@ import json
 import requests
 import sqlite3
 from pathlib import Path
+from mem_engine import env_var
 
 # Config for Graph Engine
 OLLAMA_GEN_URL = "http://localhost:11434/api/generate"
-SYNTHESIS_MODEL = os.getenv("MEMHOLOGRAFIC_SYNTHESIS_MODEL", "qwen2.5:0.5b")
-GRAPH_MODEL = os.getenv("MEMHOLOGRAFIC_GRAPH_MODEL", SYNTHESIS_MODEL)
-GRAPH_OUTPUT_PATH = os.getenv("MEMHOLOGRAFIC_GRAPH_OUTPUT", "memoria_grafo.html")
+SYNTHESIS_MODEL = env_var("SYNTHESIS_MODEL", "qwen2.5:0.5b")
+GRAPH_MODEL = env_var("GRAPH_MODEL", SYNTHESIS_MODEL)
+GRAPH_OUTPUT_PATH = env_var("GRAPH_OUTPUT", "memoria_grafo.html")
 
 class GraphEngine:
     def __init__(self, db_path):

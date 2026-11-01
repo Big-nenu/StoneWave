@@ -1,11 +1,16 @@
-# MemHolografic 🧠
+# StoneWave 🪨
 
-Memoria persistente para agentes de IA (Cline, Claude Desktop, etc.) mediante un servidor **MCP**.
+**Local memory for AI agents**
+
+*Five stones. Multiple waves. One answer.*  
+*Cinco piedras. Varias ondas. Una respuesta.*
+
+Memoria persistente para cualquier agente de IA que soporte **MCP** (Cline, Claude Desktop, Claude Code, Cursor...).
 Todo corre en local: SQLite + [Ollama](https://ollama.com). Sin nube.
 
 ## La idea
 
-MemHolografic nace de mezclar dos memorias que le gustaron a su autor:
+StoneWave nace de mezclar dos memorias que le gustaron a su autor:
 
 - **Holographic** (de Hermes): hechos con entidades y confianza.
 - **MemFS**: una memoria que se mejora sola mientras la IA no se está usando (el "sueño").
@@ -73,7 +78,7 @@ Sobre las piedras, con esta muestra chica: en preguntas de un solo hecho una pie
 
 - Python 3.10+
 - [Ollama](https://ollama.com) corriendo en `http://localhost:11434`
-- Un cliente MCP (por ejemplo Cline en VS Code)
+- Un agente o editor con soporte MCP (Cline, Claude Desktop, Claude Code, Cursor...)
 
 ## Instalación
 
@@ -91,27 +96,49 @@ ollama pull tev1:0.8b               # clasificación de temas y contradicciones
 ollama pull qwen2.5:0.5b            # fusión de recuerdos y reflexión
 ```
 
-## Configurar el MCP en Cline
+## Conectar a tu agente
 
-Abre `cline_mcp_settings.json` (en Cline: *MCP Servers → Configure*) y agrega:
+StoneWave es un servidor **MCP**, así que funciona con cualquier agente o editor que soporte MCP, no solo con uno. La configuración base es la misma en casi todos:
 
 ```json
 {
   "mcpServers": {
-    "memholografic": {
+    "stonewave": {
       "command": "python",
-      "args": ["RUTA_ABSOLUTA\\MemHolografic\\mcp_server.py"],
-      "disabled": false
+      "args": ["RUTA_ABSOLUTA/mcp_server.py"]
     }
   }
 }
 ```
 
-Ejemplo en Windows: `"C:\\Users\\TuUsuario\\Projects\\MemHolografic\\mcp_server.py"`.
+Ejemplo de ruta en Windows: `"C:\\Users\\TuUsuario\\Projects\\StoneWave\\mcp_server.py"`. Con esto basta: no hace falta configurar la base de datos ni el namespace. Reinicia el servidor en tu agente y abre una conversación nueva.
 
-Con esto basta: no hace falta configurar la base de datos ni el namespace. Reinicia el servidor en Cline y abre una conversación nueva.
+> `python` debe ser el que tiene `mcp`, `requests` y `numpy` instalados. Si usas un entorno virtual, pon la ruta a su `python.exe`.
 
-> `python` debe ser el que tiene `mcp` instalado. Si usas un entorno virtual, pon la ruta a su `python.exe`.
+Dónde se pega esa configuración según el cliente (rutas habituales; pueden cambiar según la versión, revisa la documentación de tu cliente):
+
+| Cliente | Dónde |
+|---|---|
+| Cline | `cline_mcp_settings.json` (MCP Servers → Configure) |
+| Claude Desktop | `claude_desktop_config.json` (Settings → Developer → Edit Config) |
+| Claude Code | `claude mcp add stonewave -- python RUTA/mcp_server.py` |
+| Cursor | `.cursor/mcp.json` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` |
+| VS Code (Copilot) | `.vscode/mcp.json` (usa `"servers"` en vez de `"mcpServers"`) |
+
+### Que el agente use la memoria sin que se lo pidas
+
+El servidor le dice al agente cuándo usar cada herramienta, pero no todos los clientes hacen caso de esas instrucciones. Si el tuyo no lo hace, pega esto en su archivo de reglas (`CLAUDE.md`, `AGENTS.md`, `.clinerules`, reglas de Cursor...):
+
+> Al inicio de cada conversación llama `list_memories`. Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama `inject_memory` (con `fijo=true` si es de identidad: nombre, carrera, familia). Antes de responder sobre el usuario o su historial, llama `query_memory`.
+
+### Si tu agente no usa MCP
+
+- **CLI:** `python mem_cli.py inject|query|dream|reflect|clear`. Sirve para cualquier agente que pueda ejecutar comandos.
+- **Python:** `from mem_engine import StoneWaveEngine` para usarlo dentro de tu propio agente.
+- **API HTTP local:** pendiente (ver la tabla de estado).
+
+Varios agentes pueden usar la misma memoria a la vez: la cache de vectores se actualiza sola cuando otro proceso cambia la base de datos.
 
 ## ¿Dónde se guarda la memoria?
 
@@ -158,24 +185,24 @@ También hay una CLI: `python mem_cli.py inject|query|dream|reflect|clear`.
 
 ## Probar
 
-En una conversación nueva con Cline pregunta: *"¿Qué sabes de mí?"*. Si no recuerda nada:
+En una conversación nueva con tu agente pregunta: *"¿Qué sabes de mí?"*. Si no recuerda nada:
 
 1. Revisa que Ollama esté corriendo y los modelos descargados (`ollama list`).
-2. Revisa que el servidor `memholografic` esté en verde en Cline.
+2. Revisa que el servidor esté conectado (en verde) en tu agente.
 3. Revisa que no hayas puesto un `MEMHOLOGRAFIC_NAMESPACE` o `MEMHOLOGRAFIC_DB` distinto al que usaste al guardar.
 4. Prueba el servidor a mano para ver errores: `python mcp_server.py`.
 
 ## Errores comunes
 
 - **"Connection closed" / servidor en rojo:** el script falla al arrancar. Ejecútalo a mano (`python mcp_server.py`) y lee el error.
-- **`spawn ENOENT`:** Cline no encuentra `python`. Usa la ruta completa (`where python` en Windows).
-- **`No module named 'mcp'`:** instala con `pip install mcp requests numpy` en el mismo Python que usa Cline.
+- **`spawn ENOENT`:** tu agente no encuentra `python`. Usa la ruta completa (`where python` en Windows).
+- **`No module named 'mcp'`:** instala con `pip install mcp requests numpy` en el mismo Python que usa tu agente.
 - **Dice que la memoria está vacía:** casi siempre es otra ruta de BD u otro namespace en la config.
 
 ## Estructura
 
 ```
-mcp_server.py    # servidor MCP
+mcp_server.py    # servidor MCP (StoneWave)
 mem_engine.py    # motor de memoria (inyectar, consultar, soñar, reflexionar)
 graph_engine.py  # grafo de entidades (opcional)
 mem_cli.py       # CLI
@@ -199,6 +226,7 @@ docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 | Probar con una memoria real grande (cientos de recuerdos) y reajustar umbrales si hace falta | Pendiente |
 | Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Pendiente |
 | Benchmark de preguntas y respuestas (MemBench). El `benchmark_runner.py` actual mide fusión y quedó viejo | Pendiente |
+| API HTTP local para agentes sin MCP (y para compartir una memoria entre varios agentes por red) | Pendiente |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |
 | Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |
 

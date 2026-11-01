@@ -74,7 +74,7 @@ CLASSIFICATION_TOPICS = [
     "videojuegos", "preferencias", "otro"
 ]
 
-class MemHolograficEngine:
+class StoneWaveEngine:
     def __init__(self, db_path=None):
         self.db_path = db_path if db_path else os.getenv("MEMHOLOGRAFIC_DB", DEFAULT_DB_PATH)
         self._ensure_db_folder()
@@ -107,7 +107,7 @@ class MemHolograficEngine:
         bak = self.db_path + ".bak-embeddings"
         if not os.path.exists(bak):
             shutil.copy2(self.db_path, bak)
-        print(f"MemHolografic: recalculando los embeddings de {n} recuerdos (respaldo en {bak})", file=sys.stderr)
+        print(f"StoneWave: recalculando los embeddings de {n} recuerdos (respaldo en {bak})", file=sys.stderr)
         updates = []
         for table in ("facts", "archived_facts"):
             with closing(sqlite3.connect(self.db_path)) as conn:
@@ -116,7 +116,7 @@ class MemHolograficEngine:
                 chunk = rows[start:start + 32]
                 vecs = self.embed_docs([c for _, c in chunk])
                 if any(v is None for v in vecs):
-                    print("MemHolografic: no se pudieron recalcular los embeddings (¿Ollama apagado?). Se reintentará.", file=sys.stderr)
+                    print("StoneWave: no se pudieron recalcular los embeddings (¿Ollama apagado?). Se reintentará.", file=sys.stderr)
                     return
                 updates += [(table, fid, json.dumps(v)) for (fid, _), v in zip(chunk, vecs)]
         with sqlite3.connect(self.db_path) as conn:
@@ -768,3 +768,6 @@ class MemHolograficEngine:
                 self.inject(reflection, energy=0.3, namespace=namespace)
                 return f"Reflexión autónoma inyectada en {namespace}: {reflection}"
             return "tev no pudo encontrar una conexión interesante esta vez."
+
+
+MemHolograficEngine = StoneWaveEngine  # nombre anterior, por compatibilidad

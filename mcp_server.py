@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 import mem_engine
-from mem_engine import MemHolograficEngine
+from mem_engine import StoneWaveEngine
 from graph_engine import GraphEngine
 
 # Configuración de Rutas Profesionales
@@ -27,8 +27,8 @@ INSTRUCTIONS = (
     "Si el usuario quiere ver el grafo de relaciones de su memoria, llama generate_graph (requiere MEMHOLOGRAFIC_GRAPH_ENABLED=true)."
 )
 
-mcp = FastMCP("MemHolografic", instructions=INSTRUCTIONS)
-engine = MemHolograficEngine(db_path=DB_PATH)
+mcp = FastMCP("StoneWave", instructions=INSTRUCTIONS)
+engine = StoneWaveEngine(db_path=DB_PATH)
 # Calienta la cache de vectores en segundo plano para que la primera consulta no se sienta lenta
 threading.Thread(target=lambda: engine._load_vectors(NS, "facts"), daemon=True).start()
 

@@ -1,10 +1,10 @@
 import sys
 import argparse
 from pathlib import Path
-from mem_engine import MemHolograficEngine
+from mem_engine import StoneWaveEngine
 
 def main():
-    parser = argparse.ArgumentParser(description="MemHolografic CLI - Gestor de Memoria Semántica")
+    parser = argparse.ArgumentParser(description="StoneWave CLI - Gestor de Memoria Semántica")
     parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear"], help="Comando a ejecutar")
     parser.add_argument("text", nargs="?", help="Texto para inyectar o consultar")
     parser.add_argument("-n", "--namespace", default="default", help="Namespace/Proyecto para la operación (default: 'default')")
@@ -16,7 +16,7 @@ def main():
     
     # Ruta profesional dinámica
     db_path = str(Path.home() / ".memholografic" / "memoria.db")
-    engine = MemHolograficEngine(db_path=db_path)
+    engine = StoneWaveEngine(db_path=db_path)
 
     if args.command == "inject":
         if not args.text:

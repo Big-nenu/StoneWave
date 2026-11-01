@@ -177,7 +177,7 @@ JSON:"""
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>MemHolografic - Grafo de Memoria</title>
+<title>StoneWave - Grafo de Memoria</title>
 <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 <style type="text/css">
   body {{ margin: 0; overflow: hidden; font-family: sans-serif; background: #0a0a0a; color: #eee; }}
@@ -190,7 +190,7 @@ JSON:"""
 </head>
 <body>
 <div id="info">
-  <h1>🧠 MemHolografic - Grafo de Memoria</h1>
+  <h1>🧠 StoneWave - Grafo de Memoria</h1>
   <p><strong>Entidades:</strong> {len(entities)}</p>
   <p><strong>Relaciones:</strong> {len(relationships)}</p>
   <p><strong>Namespace:</strong> {namespace}</p>

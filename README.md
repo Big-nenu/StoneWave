@@ -269,6 +269,68 @@ Ollama (local)
   ...
 ```
 
+### Soluciones sugeridas
+
+Si el doctor encuentra un fallo **grave**, al final imprime una sección **SOLUCIONES SUGERIDAS** con los comandos exactos para repararlo (no ejecuta nada por ti; los comandos se adaptan a tu sistema: Windows, macOS o Linux). Los avisos que no son graves salen aparte, en **RECOMENDACIONES (no graves)**.
+
+| Problema | Qué sugiere |
+|---|---|
+| Ollama apagado | Cómo arrancarlo (`ollama serve`, `brew services restart ollama` o `systemctl restart ollama`) y cómo comprobar que responde (`curl http://localhost:11434/api/tags`) |
+| Falta un modelo | `ollama pull <modelo>` y `ollama list` para confirmarlo |
+| Modelo instalado que no responde | `ollama ps`, `ollama stop <modelo>`, volver a bajarlo, dónde ver el log de Ollama (y actualizar Ollama si da HTTP 404) |
+| Base de datos que no abre o está dañada | Revisar procesos y permisos; guardar una copia del archivo dañado; restaurar desde `memoria.db.bak-embeddings` o `~/.memholografic/memoria.db` si existen (pone el comando exacto), y si no hay respaldos, `sqlite3 ... ".recover"` |
+| Faltan tablas (base de datos vieja) | El comando para que el motor las vuelva a crear |
+| numpy no instalado (aviso) | `pip install numpy` en el mismo Python que ejecuta el doctor |
+
+```
+[XX] No se pudo abrir la base de datos: file is not a database
+
+============================================================
+SOLUCIONES SUGERIDAS
+============================================================
+
+1. No se pudo abrir la base de datos: file is not a database
+     La base de datos esta danada.
+     Antes de tocar nada, guarda una copia del archivo actual:
+     $ Copy-Item "...\memoria.db" "...\memoria.db.danada" -Force
+     No encontre respaldos automaticos. Intenta recuperar lo que se pueda:
+     $ sqlite3 "...\memoria.db" ".recover" | sqlite3 "...\memoria.db.recuperada"
+```
+
+Las pruebas del doctor (`tests/test_doctor.py`) simulan cada fallo sin necesitar Ollama.
+
+## Benchmark (MemBench)
+
+Mide si el motor **responde bien**, no solo si corre. Cada caso, en una base de datos temporal (no toca tu memoria):
+
+1. inyecta los recuerdos del caso (más 8 recuerdos de relleno para que el corpus se parezca a una memoria real),
+2. envejece los que lo pidan (para probar el sótano),
+3. llama a `dream`,
+4. hace un `query` con la pregunta,
+5. compara lo devuelto (top-3) contra la respuesta esperada.
+
+```bash
+python scripts/benchmark_stones.py                       # compara 1 piedra vs 5 piedras (necesita Ollama)
+python scripts/benchmark_stones.py --stones 5            # solo 5 piedras
+python scripts/benchmark_stones.py --cases casos.jsonl   # tus propios casos
+python scripts/benchmark_stones.py --fake                # sin Ollama: solo prueba que el benchmark corre
+python scripts/benchmark_stones.py --json salida.json    # guarda los resultados
+python scripts/benchmark_stones.py --min-pass 0.8        # código de salida 1 si acierta menos del 80 %
+```
+
+Formato de un caso (una línea JSON por caso en el `.jsonl`):
+
+```json
+{"id": "multi_01", "category": "multi",
+ "facts": ["texto", {"text": "otro texto", "pinned": false, "age_days": 200}],
+ "question": "¿...?", "expected": ["fragmento1", "fragmento2"],
+ "forbidden": ["no debe salir"], "dream": true, "requires_llm": false, "background": true}
+```
+
+`expected` son fragmentos que deben aparecer (sin importar mayúsculas ni acentos), `forbidden` los que no deben salir (por ejemplo un dato ya contradicho) y `requires_llm` marca los casos que necesitan los modelos reales (se omiten con `--fake`). Un caso pasa si aparecen todos los `expected` y ningún `forbidden`.
+
+**Estado:** es un esqueleto con 4 casos de ejemplo (un hecho, varios hechos, contradicción y sótano). Con Ollama real: 1 piedra acierta 3/4 (falla la pregunta de varios hechos) y 5 piedras 4/4, pero la muestra es muy chica; falta el dataset grande.
+
 ## Errores comunes
 
 - **"Connection closed" / servidor en rojo:** el script falla al arrancar. Ejecútalo a mano (`python mcp_server.py`) y lee el error.
@@ -285,7 +347,8 @@ graph_engine.py  # grafo de entidades (opcional)
 mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor)
 doctor.py        # reporte de salud de la memoria (solo lectura)
 api.py           # API HTTP local (solo biblioteca estandar)
-tests/           # test_engine.py y test_api.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
+scripts/         # benchmark_stones.py: MemBench (esqueleto de benchmark)
+tests/           # test_engine.py, test_api.py, test_doctor.py y test_benchmark.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
 docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 archive/v0.1/    # prototipos y scripts de la primera version (historial, sin mantener)
 ```
@@ -305,14 +368,31 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Prueba con Ollama real, prefijos, centrado y umbrales calibrados | Hecho |
 | Sueño automático en segundo plano (cuando toca y no se usa la memoria) | Hecho |
 | Comando `doctor`: reporte de salud (BD, sótano, Ollama, último sueño) | Hecho |
+| Doctor solucionador: si hay un fallo grave imprime las soluciones sugeridas (comandos exactos) | Hecho |
 | Limpieza del repo: prototipos y scripts viejos movidos a `archive/v0.1/` | Hecho |
 | Probar con una memoria real grande (cientos de recuerdos) y reajustar umbrales si hace falta | Pendiente |
 | Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Pendiente |
-| Benchmark de preguntas y respuestas (MemBench). El `benchmark_runner.py` actual mide fusión y quedó viejo | Pendiente |
+| Esqueleto de MemBench (`scripts/benchmark_stones.py`: inyecta → dream → query → compara con lo esperado) | Hecho (el viejo `tests/benchmark_runner.py` mide fusión y quedó obsoleto) |
+| Dataset grande de MemBench (unos 50 casos: varios hechos, contradicciones, sótano) | Pendiente |
 | API HTTP local para agentes sin MCP (`api.py`: `/inject`, `/query`, `/dream`) | Hecho |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |
 | Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |
 
 **Límites conocidos:** las contradicciones ya no se detectan al guardar sino en el sueño, así que entre un guardado y el siguiente sueño pueden coexistir dos datos que se contradicen. Los umbrales se calibraron con 12 recuerdos y pueden necesitar ajuste con una memoria grande.
+
+## Para contribuir
+
+**Regla de documentación:** cualquier cambio de arquitectura, función nueva o script agregado se documenta en este README, en su sección correspondiente, **en el mismo commit**. Si no está en el README, no está terminado.
+
+Antes de subir cambios, corre las pruebas (ninguna de estas necesita Ollama):
+
+```bash
+python tests/test_engine.py
+python tests/test_api.py
+python tests/test_doctor.py
+python tests/test_benchmark.py
+```
+
+Con Ollama encendido también: `python tests/real_test.py` y `python scripts/benchmark_stones.py`.
 
 La historia completa del diseño y los experimentos está en [`docs/BITACORA.md`](docs/BITACORA.md).

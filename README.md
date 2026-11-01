@@ -143,11 +143,38 @@ El servidor le dice al agente cuándo usar cada herramienta, pero no todos los c
 
 ### Si tu agente no usa MCP
 
-- **CLI:** `python mem_cli.py inject|query|dream|reflect|clear`. Sirve para cualquier agente que pueda ejecutar comandos.
+- **CLI:** `python mem_cli.py inject|query|dream|reflect|clear|doctor`. Sirve para cualquier agente que pueda ejecutar comandos.
 - **Python:** `from mem_engine import StoneWaveEngine` para usarlo dentro de tu propio agente.
-- **API HTTP local:** pendiente (ver la tabla de estado).
+- **API HTTP local:** `python api.py` (solo biblioteca estándar, no instala nada). Ver la sección de abajo.
 
 Varios agentes pueden usar la misma memoria a la vez: la cache de vectores se actualiza sola cuando otro proceso cambia la base de datos.
+
+### API HTTP local
+
+Para agentes o programas que no hablan MCP (o para que varios agentes compartan la misma memoria):
+
+```bash
+python api.py                 # escucha en http://127.0.0.1:8765
+python api.py --port 9000     # otro puerto
+```
+
+| Endpoint | Cuerpo (JSON) | Responde |
+|---|---|---|
+| `POST /inject` | `{"content": "...", "energy": 0.5, "namespace": "default", "fijo": false}` | `{"ok": true, "result": "..."}` |
+| `POST /query` | `{"text": "...", "namespace": "default"}` | `{"ok": true, "results": [{"sim", "id", "energy", "content"}]}` (hasta 3) |
+| `POST /dream` | `{"namespace": "default"}` | `{"ok": true, "result": "..."}` |
+| `GET /health` | — | estado y número de recuerdos |
+
+```bash
+curl -X POST http://127.0.0.1:8765/inject -H "Content-Type: application/json" -d '{"content": "Mi perfume favorito es Versace Oud Noir"}'
+curl -X POST http://127.0.0.1:8765/query  -H "Content-Type: application/json" -d '{"text": "¿Qué perfume me gusta?"}'
+```
+
+(En PowerShell escribe `curl.exe` en vez de `curl`.)
+
+**Seguridad:** por defecto solo escucha en `127.0.0.1`, exige `Content-Type: application/json` y rechaza peticiones cuyo `Host` no sea local (protege contra páginas web maliciosas). Si la abres a tu red con `--host 0.0.0.0`, define `STONEWAVE_API_TOKEN` y manda `Authorization: Bearer <token>`.
+
+La API no sueña sola: llama a `/dream` de vez en cuando o deja corriendo el servidor MCP, que sí tiene sueño automático.
 
 ## ¿Dónde se guarda la memoria?
 
@@ -171,6 +198,8 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
 | `STONEWAVE_STONES` | `5` | Piedras por consulta |
 | `STONEWAVE_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (en las pruebas salió peor y más lento) |
+| `STONEWAVE_API_HOST` / `STONEWAVE_API_PORT` | `127.0.0.1` / `8765` | Dónde escucha `api.py` |
+| `STONEWAVE_API_TOKEN` | (vacío) | Si lo defines, la API exige `Authorization: Bearer <token>` |
 | `STONEWAVE_AUTO_DREAM` | `true` | Sueño automático en segundo plano |
 | `STONEWAVE_DREAM_HOURS` | `12` | Cada cuántas horas conviene soñar (`0` = nunca solo) |
 | `STONEWAVE_DREAM_IDLE_MIN` | `10` | Minutos sin usar la memoria antes de soñar solo |
@@ -195,7 +224,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `generate_graph` | Grafo HTML de entidades y relaciones (requiere `STONEWAVE_GRAPH_ENABLED=true`) |
 | `clear_memory` | Borra todo el namespace (irreversible) |
 
-También hay una CLI: `python mem_cli.py inject|query|dream|reflect|clear`.
+También hay una CLI: `python mem_cli.py inject|query|dream|reflect|clear|doctor`.
 
 ## Probar
 
@@ -205,6 +234,40 @@ En una conversación nueva con tu agente pregunta: *"¿Qué sabes de mí?"*. Si 
 2. Revisa que el servidor esté conectado (en verde) en tu agente.
 3. Revisa que no hayas puesto un `STONEWAVE_NAMESPACE` o `STONEWAVE_DB` distinto al que usaste al guardar.
 4. Prueba el servidor a mano para ver errores: `python mcp_server.py`.
+
+## Doctor: revisar la salud de la memoria
+
+```bash
+python mem_cli.py doctor            # namespace "default"
+python mem_cli.py doctor -n trabajo # otro namespace
+```
+
+Es de **solo lectura** (no abre el motor ni modifica nada) e imprime un reporte rápido:
+
+- **Base de datos:** ruta, conexión, tamaño de `memoria.db` y chequeo de integridad.
+- **Recuerdos:** activos vs. en el sótano (con el motivo: desuso o contradicción), fijos y enlaces.
+- **Ollama:** si responde, y si los modelos de embeddings (`embeddinggemma-2:270m`) y de decisión (`tev1:0.8b`) están instalados y contestan de verdad, con su tiempo de respuesta.
+- **Sueño:** fecha y hora del último ciclo (y si el automático está activado).
+- **Entorno:** si numpy está instalado.
+
+Termina con código `0` si todo está bien (o solo hay avisos) y `1` si hay algún problema grave, así que también sirve en scripts.
+
+```
+=== StoneWave Doctor ===
+
+Base de datos
+  [OK] Conexion OK, tamano 176.0 KB
+  [OK] Integridad: ok
+
+Recuerdos (namespace 'default')
+  [OK] Activos (biblioteca): 6 (fijos: 1)
+  [OK] En el sotano: 0
+
+Ollama (local)
+  [OK] Embeddings: embeddinggemma-2:270m vectores de 768 dimensiones (2337 ms)
+  [OK] Decision: tev1:0.8b responde (1649 ms)
+  ...
+```
 
 ## Errores comunes
 
@@ -219,9 +282,12 @@ En una conversación nueva con tu agente pregunta: *"¿Qué sabes de mí?"*. Si 
 mcp_server.py    # servidor MCP (StoneWave)
 mem_engine.py    # motor de memoria (inyectar, consultar, soñar, reflexionar)
 graph_engine.py  # grafo de entidades (opcional)
-mem_cli.py       # CLI
-tests/           # test_engine.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
+mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor)
+doctor.py        # reporte de salud de la memoria (solo lectura)
+api.py           # API HTTP local (solo biblioteca estandar)
+tests/           # test_engine.py y test_api.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
 docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
+archive/v0.1/    # prototipos y scripts de la primera version (historial, sin mantener)
 ```
 
 ## Estado y pendientes
@@ -238,10 +304,12 @@ docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 | Consulta por ondas (5 piedras, crestas y valles, segunda ronda) | Hecho |
 | Prueba con Ollama real, prefijos, centrado y umbrales calibrados | Hecho |
 | Sueño automático en segundo plano (cuando toca y no se usa la memoria) | Hecho |
+| Comando `doctor`: reporte de salud (BD, sótano, Ollama, último sueño) | Hecho |
+| Limpieza del repo: prototipos y scripts viejos movidos a `archive/v0.1/` | Hecho |
 | Probar con una memoria real grande (cientos de recuerdos) y reajustar umbrales si hace falta | Pendiente |
 | Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Pendiente |
 | Benchmark de preguntas y respuestas (MemBench). El `benchmark_runner.py` actual mide fusión y quedó viejo | Pendiente |
-| API HTTP local para agentes sin MCP (y para compartir una memoria entre varios agentes por red) | Pendiente |
+| API HTTP local para agentes sin MCP (`api.py`: `/inject`, `/query`, `/dream`) | Hecho |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |
 | Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |
 

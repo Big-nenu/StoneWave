@@ -5,7 +5,7 @@ from mem_engine import StoneWaveEngine
 
 def main():
     parser = argparse.ArgumentParser(description="StoneWave CLI - Gestor de Memoria Semántica")
-    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear"], help="Comando a ejecutar")
+    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear", "doctor"], help="Comando a ejecutar (doctor = reporte de salud de la memoria)")
     parser.add_argument("text", nargs="?", help="Texto para inyectar o consultar")
     parser.add_argument("-n", "--namespace", default="default", help="Namespace/Proyecto para la operación (default: 'default')")
     parser.add_argument("-e", "--energy", type=float, default=0.5, help="Energía inicial para la inyección (default: 0.5)")
@@ -13,6 +13,10 @@ def main():
     parser.add_argument("-f", "--fijo", action="store_true", help="Recuerdo fijo: no decae ni se archiva")
 
     args = parser.parse_args()
+
+    if args.command == "doctor":
+        from doctor import run_doctor  # solo lectura: no abre el motor ni modifica nada
+        sys.exit(run_doctor(args.namespace))
     
     # Ruta profesional dinámica
     engine = StoneWaveEngine()

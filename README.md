@@ -47,6 +47,15 @@ Cada recuerdo es un texto con su vector (embedding), una energía y, opcionalmen
 - **Sueño (`force_dream`):** (1) baja al sótano lo que lleva tiempo sin usarse, (2) clasifica por tema los recuerdos nuevos, (3) enlaza los recuerdos parecidos sin modificarlos y (4) si dos recuerdos se contradicen, el más viejo baja al sótano (el modelo tiene que decirlo en los dos órdenes para que cuente). Lo que baja por contradicción nunca se resucita solo.
 - **Reflexión:** `trigger_reflection` genera una intuición a partir de los recuerdos con más energía y la guarda como recuerdo nuevo.
 
+### Sueño automático
+
+No hace falta que el agente llame a `force_dream`. El servidor revisa cada 5 minutos y sueña solo cuando:
+
+1. Ya pasaron 12 horas desde el último sueño (manual o automático), **y**
+2. llevas 10 minutos sin usar la memoria (o, si nunca hay un rato libre, ya pasaron 36 horas).
+
+Así la memoria se ordena sola mientras no usas la IA, sin hacer lenta ninguna consulta. El resultado queda en el log del servidor (stderr).
+
 ### ¿Por qué es rápida?
 
 - Los vectores viven en una matriz de numpy en memoria; una consulta es una multiplicación de matrices, no un ciclo en Python.
@@ -162,6 +171,9 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
 | `STONEWAVE_STONES` | `5` | Piedras por consulta |
 | `STONEWAVE_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (en las pruebas salió peor y más lento) |
+| `STONEWAVE_AUTO_DREAM` | `true` | Sueño automático en segundo plano |
+| `STONEWAVE_DREAM_HOURS` | `12` | Cada cuántas horas conviene soñar (`0` = nunca solo) |
+| `STONEWAVE_DREAM_IDLE_MIN` | `10` | Minutos sin usar la memoria antes de soñar solo |
 | `STONEWAVE_QUERY_PREFIX` / `STONEWAVE_DOC_PREFIX` | según el modelo | Prefijos de pregunta y documento. Se ponen solos para `embeddinggemma` y `nomic-embed-text` |
 | `STONEWAVE_GRAPH_ENABLED` | `false` | Activa `generate_graph` |
 
@@ -225,6 +237,7 @@ docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 | Sueño que ordena y enlaza sin reescribir; las contradicciones bajan al sótano | Hecho |
 | Consulta por ondas (5 piedras, crestas y valles, segunda ronda) | Hecho |
 | Prueba con Ollama real, prefijos, centrado y umbrales calibrados | Hecho |
+| Sueño automático en segundo plano (cuando toca y no se usa la memoria) | Hecho |
 | Probar con una memoria real grande (cientos de recuerdos) y reajustar umbrales si hace falta | Pendiente |
 | Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Pendiente |
 | Benchmark de preguntas y respuestas (MemBench). El `benchmark_runner.py` actual mide fusión y quedó viejo | Pendiente |

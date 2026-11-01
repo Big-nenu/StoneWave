@@ -2,6 +2,7 @@ import contextlib
 import os
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
@@ -16,6 +17,9 @@ from graph_engine import GraphEngine
 # Configuración de Rutas Profesionales
 DB_PATH = env_var("DB")  # si no hay, el motor usa ~/.stonewave/memoria.db
 NS = env_var("NAMESPACE", "default")
+AUTO_DREAM = env_var("AUTO_DREAM", "true").lower() == "true"
+DREAM_IDLE_MIN = float(env_var("DREAM_IDLE_MIN", "10"))  # minutos sin usar la memoria para soñar solo
+_last_activity = time.time()
 GRAPH_ENABLED = env_var("GRAPH_ENABLED", "false").lower() == "true"
 
 INSTRUCTIONS = (
@@ -31,6 +35,26 @@ mcp = FastMCP("StoneWave", instructions=INSTRUCTIONS)
 engine = StoneWaveEngine(db_path=DB_PATH)
 # Calienta la cache de vectores en segundo plano para que la primera consulta no se sienta lenta
 threading.Thread(target=lambda: engine._load_vectors(NS, "facts"), daemon=True).start()
+
+def _touch_activity():
+    global _last_activity
+    _last_activity = time.time()
+
+def _dream_loop():
+    """Sueño automatico: cuando toca soñar y no se esta usando la memoria (o ya paso demasiado tiempo)."""
+    every = mem_engine.DREAM_EVERY_HOURS
+    while True:
+        time.sleep(300)
+        try:
+            if not engine.dream_due(NS):
+                continue
+            idle_min = (time.time() - _last_activity) / 60
+            hours = engine.hours_since_dream(NS)
+            if idle_min >= DREAM_IDLE_MIN or (hours is not None and hours >= 3 * every):
+                print("StoneWave: sueño automático...", file=sys.stderr)
+                print("StoneWave:", engine.dream(namespace=NS), file=sys.stderr)
+        except Exception as ex:
+            print(f"StoneWave: error en el sueño automático: {ex}", file=sys.stderr)
 
 def _quiet():
     return contextlib.redirect_stdout(sys.stderr)
@@ -48,11 +72,13 @@ def _all_memories(limit: int = 30) -> str:
 @mcp.tool()
 def list_memories(limit: int = 30) -> str:
     """LLAMA ESTO AL INICIO de CADA CONVERSACIÓN. Devuelve lo que ya se sabe del usuario."""
+    _touch_activity()
     return _all_memories(limit)
 
 @mcp.tool()
 def query_memory(text: str) -> str:
     """Busca recuerdos relacionados con un tema."""
+    _touch_activity()
     with _quiet():
         res = engine.query(text, namespace=NS)
     if isinstance(res, str):
@@ -67,6 +93,7 @@ def query_memory(text: str) -> str:
 @mcp.tool()
 def inject_memory(content: str, energy: float = 0.5, fijo: bool = False) -> str:
     """Guarda un dato duradero: preferencia, decisión, dato personal o técnico. Usa fijo=true para identidad (nombre, carrera, familia): nunca decae ni se archiva."""
+    _touch_activity()
     with _quiet():
         result = engine.inject(content, energy=energy, namespace=NS, pinned=fijo)
     return str(result) if result is not None else "No se pudo guardar."
@@ -74,6 +101,7 @@ def inject_memory(content: str, energy: float = 0.5, fijo: bool = False) -> str:
 @mcp.tool()
 def force_dream() -> str:
     """Sueño: baja al sótano lo que no se usa, clasifica por temas y enlaza recuerdos parecidos (no reescribe nada)."""
+    _touch_activity()
     with _quiet():
         result = engine.dream(namespace=NS)
     return str(result) if result is not None else "El proceso de sueño no generó resultados."
@@ -81,6 +109,7 @@ def force_dream() -> str:
 @mcp.tool()
 def trigger_reflection() -> str:
     """Genera una intuición nueva conectando los recuerdos más fuertes."""
+    _touch_activity()
     with _quiet():
         result = engine.reflect(namespace=NS)
     return str(result) if result is not None else "No se encontró una conexión interesante esta vez."
@@ -88,6 +117,7 @@ def trigger_reflection() -> str:
 @mcp.tool()
 def clear_memory(confirm: bool = False) -> str:
     """BORRA TODA la memoria. Irreversible."""
+    _touch_activity()
     if not confirm:
         return "Cancelado: falta confirm=true."
     with _quiet():
@@ -97,6 +127,7 @@ def clear_memory(confirm: bool = False) -> str:
 @mcp.tool()
 def generate_graph(open_browser: bool = True) -> str:
     """Genera un grafo visual de las relaciones entre entidades de la memoria."""
+    _touch_activity()
     if not GRAPH_ENABLED:
         return "El generador de grafo está desactivado."
     
@@ -116,4 +147,6 @@ def generate_graph(open_browser: bool = True) -> str:
     return mensaje
 
 if __name__ == "__main__":
+    if AUTO_DREAM and mem_engine.DREAM_EVERY_HOURS > 0:
+        threading.Thread(target=_dream_loop, daemon=True).start()
     mcp.run()

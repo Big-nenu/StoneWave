@@ -76,6 +76,7 @@ DUPLICATE_SIM = 0.90  # arriba de esto, inyectar solo refuerza el recuerdo exist
 CONFLICT_SIM = 0.40  # arriba de esto, el sueño revisa si se contradicen (contradicciones medidas: 0.44-0.76)
 RELATED_SIM = 0.30  # arriba de esto, el sueño enlaza los recuerdos (sin relacion: negativo)
 DREAM_MAX_CHECKS = 30  # revisiones de contradiccion con LLM por sueño
+DREAM_EVERY_HOURS = float(env_var("DREAM_HOURS", "12"))  # cada cuantas horas conviene soñar
 ANGLE_WEIGHT = 0.5     # peso de las piedras-angulo frente a la pregunta completa
 
 STOPWORDS = {
@@ -280,8 +281,9 @@ class StoneWaveEngine:
         """Devuelve (ids, matriz, indice) de una tabla. Se guarda en cache hasta que la BD cambie."""
         self._check_version()
         key = (namespace, table)
-        if key in self._cache:
-            return self._cache[key]
+        data = self._cache.get(key)
+        if data is not None:
+            return data
         with closing(sqlite3.connect(self.db_path)) as conn:
             extra = " AND COALESCE(reason, '') != 'contradiccion'" if table == "archived_facts" else ""
             rows = conn.execute(f"SELECT id, embedding FROM {table} WHERE namespace=?{extra} ORDER BY id", (namespace,)).fetchall()
@@ -324,7 +326,7 @@ class StoneWaveEngine:
             n_after = len(ids) + 1
             if n_after < CACHE_REBUILD_BELOW or n_after > 1.25 * self._built_n.get(key, 0):
                 # la media usada para centrar ya no representa a la memoria: se reconstruye en la siguiente consulta
-                del self._cache[key]
+                self._cache.pop(key, None)
             elif np is not None and len(vec) == mat.shape[1]:
                 v = self._unit(np.asarray(vec, dtype=np.float32), mu).reshape(1, -1)
                 idx = dict(idx)
@@ -757,9 +759,28 @@ class StoneWaveEngine:
         archived = self.decay(namespace)
         topics = self._classify_pending(namespace)
         contradictions, similar, related = self._link_facts(namespace)
-        return (f"Sleeptime finalizado para {namespace}. Al sotano por desuso: {archived}. "
+        msg = (f"Sleeptime finalizado para {namespace}. Al sotano por desuso: {archived}. "
                 f"Al sotano por contradiccion: {contradictions}. Enlaces: {similar} similares, {related} relacionados. "
                 f"Temas clasificados: {topics}.")
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"last_dream:{namespace}", str(time.time())))
+            conn.commit()
+        return msg
+
+    def hours_since_dream(self, namespace="default"):
+        """Horas desde el ultimo sueño (manual o automatico). None si nunca se ha soñado."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key=?", (f"last_dream:{namespace}",)).fetchone()
+        return None if row is None else (time.time() - float(row[0])) / 3600
+
+    def dream_due(self, namespace="default", hours=None):
+        """True si ya toca soñar: pasaron las horas indicadas, o nunca se ha soñado y hay recuerdos."""
+        hours = DREAM_EVERY_HOURS if hours is None else hours
+        h = self.hours_since_dream(namespace)
+        if h is None:
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                return conn.execute("SELECT COUNT(*) FROM facts WHERE namespace=?", (namespace,)).fetchone()[0] > 0
+        return h >= hours
 
     def reflect(self, namespace="default"):
         with sqlite3.connect(self.db_path) as conn:

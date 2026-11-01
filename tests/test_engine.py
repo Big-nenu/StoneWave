@@ -139,6 +139,20 @@ def test_cache_se_actualiza():
     assert "telescopio" in e1.query("telescopio vecino montura ecuatorial")[0][3]
 
 
+def test_sueno_automatico_toca_cuando_pasan_las_horas():
+    e = make_engine()
+    assert e.dream_due() is False               # sin recuerdos no hay nada que ordenar
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    assert e.dream_due() is True                # nunca ha soñado
+    e.dream()
+    assert e.dream_due() is False and e.hours_since_dream() < 0.01
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE meta SET value=? WHERE key='last_dream:default'", (str(time.time() - 13 * 3600),))
+        c.commit()
+    assert e.dream_due() is True                # pasaron 13 h (el limite son 12)
+    assert e.dream_due(hours=24) is False
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

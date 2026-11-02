@@ -861,7 +861,7 @@ class StoneWaveEngine:
                     r = conn.execute("SELECT content FROM facts WHERE id=? AND namespace=?", (replaced_by, namespace)).fetchone()
                     current = r[0] if r else None
                 out.append({"sim": float(sim), "id": tid, "content": content, "reason": reason,
-                            "deleted_at": self._iso(deleted_at), "current": current})
+                            "deleted_at": self._iso(deleted_at), "deleted_ts": deleted_at, "current": current})
         return out
 
     def list_trash(self, namespace="default"):
@@ -878,6 +878,37 @@ class StoneWaveEngine:
             else:
                 cur = conn.execute("DELETE FROM trash WHERE namespace=? AND id=?", (namespace, int(trash_id)))
             return cur.rowcount
+
+    def restore_from_trash(self, trash_id, namespace="default"):
+        """Devuelve un recuerdo de la papelera a la biblioteca (solo a peticion del usuario).
+
+        Devuelve un dict con 'status': 'restored' (trae 'id', 'content' y 'current': el valor nuevo que lo reemplazo, si sigue activo),
+        'exists' (ya hay un recuerdo activo igual), 'not_found' o 'error'.
+        """
+        try:
+            tid = int(trash_id)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "trash_id debe ser un numero."}
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT content, energy, embedding, replaced_by FROM trash WHERE id=? AND namespace=?", (tid, namespace)).fetchone()
+            if row is None:
+                return {"status": "not_found", "message": f"No hay un recuerdo con ID {tid} en la papelera de '{namespace}'."}
+            content, energy, emb, replaced_by = row
+            wanted = self._norm_text(content)
+            if any(self._norm_text(r[0]) == wanted for r in conn.execute("SELECT content FROM facts WHERE namespace=?", (namespace,))):
+                conn.execute("DELETE FROM trash WHERE id=?", (tid,))
+                return {"status": "exists", "message": "Ya hay un recuerdo activo igual; no se duplicó."}
+            current = None
+            if replaced_by is not None:
+                r = conn.execute("SELECT content FROM facts WHERE id=? AND namespace=?", (replaced_by, namespace)).fetchone()
+                current = r[0] if r else None
+            now = time.time()
+            cur = conn.execute(
+                "INSERT INTO facts (namespace, content, energy, embedding, last_used, pinned, created_at, source) VALUES (?, ?, ?, ?, ?, 0, ?, 'restaurado')",
+                (namespace, content, max(float(energy if energy is not None else 0.5), 0.5), emb, now, now))
+            new_id = cur.lastrowid
+            conn.execute("DELETE FROM trash WHERE id=?", (tid,))
+        return {"status": "restored", "id": new_id, "content": content, "current": current}
 
     def export_memories(self, path, namespace=None):
         """Exporta los recuerdos activos a un .jsonl canonico (un objeto JSON por linea).

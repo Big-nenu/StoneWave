@@ -455,6 +455,28 @@ def test_papelera_sotano_y_borrado_definitivo():
     assert e.list_trash() == []
 
 
+def test_restaurar_desde_la_papelera():
+    e = make_engine()
+    C = "Mi color favorito es el azul marino"
+    e.inject(C)
+    e.forget(_ids(e)[C])
+    hits = e.query_trash("mi color favorito")
+    assert hits and hits[0]["deleted_ts"], hits
+    tid = e.list_trash()[0][0]
+    r = e.restore_from_trash(tid)
+    assert r["status"] == "restored" and r["content"] == C and r["current"] is None, r
+    assert e.get_all_facts() == [C] and e.list_trash() == []
+    res = e.query("color favorito azul marino")
+    assert isinstance(res, list) and res[0][3] == C, res
+    assert e.restore_from_trash(tid)["status"] == "not_found"
+    assert e.restore_from_trash("x")["status"] == "error"
+    old, new = "Vivo en Guadalajara con mis papás", "Vivo en Monterrey con mi pareja"
+    e.inject(old)
+    e.update_memory(_ids(e)[old], new)
+    r = e.restore_from_trash(e.list_trash()[0][0])  # avisa que sigue activo el valor nuevo
+    assert r["status"] == "restored" and r["current"] == new, r
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

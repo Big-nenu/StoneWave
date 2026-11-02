@@ -245,6 +245,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `update_memory` | Corrige el texto de un recuerdo por su ID (conserva energía y si es fijo) |
 | `forget_memory` | Borra un recuerdo por ID, o por texto (si hay varias coincidencias pide el ID) |
 | `clear_memory` | Borra todo el namespace, incluida su papelera (irreversible) |
+| `restore_memory` | Devuelve un recuerdo de la papelera a la biblioteca (por su `[papelera n]`) |
 | `empty_trash` | Borra de verdad lo de la papelera (uno por ID, o todo con `confirm=true`) |
 
 También hay una CLI: `python mem_cli.py inject|query|dream|reflect|clear|doctor|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
@@ -264,7 +265,7 @@ Desde Python: `engine.forget(id_o_texto)` y `engine.update_memory(fact_id, texto
 
 Cuando un recuerdo se borra con `forget_memory` o se corrige con `update_memory`, el texto anterior no desaparece sin más: pasa a la **papelera** (tabla `trash`, con su vector, el motivo `olvidado` o `reemplazado` y la fecha). Sirve para que el agente pueda decir *"ya no tienes ese dato porque lo borraste"* o *"tenías esto y lo reemplazaste por esto otro"*, en vez de contestar que nunca supo nada.
 
-- **Solo informa:** a diferencia del sótano, la papelera **nunca resucita** un recuerdo sola ni entra en el resultado normal de `query`.
+- **Solo informa:** a diferencia del sótano, la papelera **nunca resucita** un recuerdo sola ni entra en el resultado normal de `query`. Si quieres recuperar algo, `restore_memory` lo devuelve a la biblioteca: el agente te lo ofrece (con la fecha y hora en que se borró) cuando le preguntas por algo que ya no está.
 - **Consulta:** `query_memory` busca en la biblioteca (y el sótano) como siempre y, además, por similitud en la papelera. Si hay coincidencias las muestra aparte, bajo "Historial (YA NO VIGENTE...)"; si el recuerdo fue reemplazado, muestra también el valor actual. Desde Python: `engine.query_trash(texto)`, `engine.list_trash()`.
 - **Privacidad:** si quieres que algo se olvide por completo, `empty_trash` lo borra de verdad (uno por ID, o toda la papelera con `confirm=true`). `clear_memory` también vacía la papelera del namespace. El sueño no toca la papelera.
 - La papelera no se exporta a `.jsonl` ni la expone la API HTTP.

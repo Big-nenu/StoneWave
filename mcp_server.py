@@ -31,7 +31,8 @@ INSTRUCTIONS = (
     "Antes de responder sobre el usuario o su historial, llama query_memory. "
     "Si el usuario corrige un dato ya guardado, llama update_memory; si pide olvidar o borrar algo, llama forget_memory. "
     "Ambas usan el ID que aparece como [ID n] en list_memories y query_memory. "
-    "query_memory también revisa la papelera (lo olvidado o reemplazado): si devuelve un Historial, ese dato YA NO ESTÁ VIGENTE; dile al usuario que lo borró o lo cambió (y por qué valor). "
+    "query_memory también revisa la papelera (lo olvidado o reemplazado): si devuelve un Historial, ese dato YA NO ESTÁ VIGENTE. "
+    "Dile al usuario qué era, cuándo se borró o cambió (y por qué valor) y ofrécele restaurarlo; si acepta, llama restore_memory con el [papelera n]. "
     "Si el usuario quiere ver el grafo de relaciones de su memoria, llama generate_graph (requiere STONEWAVE_GRAPH_ENABLED=true)."
 )
 
@@ -73,19 +74,36 @@ def _all_memories(limit: int = 30) -> str:
     extra = f"\n(Se muestran los {len(shown)} con más energía de {len(facts)})" if len(facts) > len(shown) else ""
     return f"Memoria ({len(facts)} recuerdos):\n{text}{extra}"
 
+def _when(ts) -> str:
+    """Fecha y hora local + hace cuánto."""
+    if ts is None:
+        return "fecha desconocida"
+    secs = max(0.0, time.time() - float(ts))
+    if secs < 90:
+        ago = "hace un momento"
+    elif secs < 3600:
+        ago = f"hace {int(secs // 60)} min"
+    elif secs < 86400:
+        ago = f"hace {int(secs // 3600)} h"
+    else:
+        ago = f"hace {int(secs // 86400)} días"
+    from datetime import datetime
+    return f"{datetime.fromtimestamp(float(ts)).strftime('%Y-%m-%d %H:%M')}, {ago}"
+
 def _history_text(hits) -> str:
     """Papelera: lo que se olvidó o se reemplazó. NO está vigente; solo da contexto."""
     if not hits:
         return ""
     out = []
     for h in hits:
-        when = (h.get("deleted_at") or "")[:10]
+        when = _when(h.get("deleted_ts"))
         if h["reason"] == "reemplazado":
             now = f"; ahora: {h['current']}" if h.get("current") else ""
             out.append(f"- [papelera {h['id']}] (reemplazado el {when}{now}) {h['content']}")
         else:
             out.append(f"- [papelera {h['id']}] (olvidado el {when}) {h['content']}")
-    return "\nHistorial (YA NO VIGENTE; estaba guardado y se olvidó o se reemplazó):\n" + "\n".join(out)
+    return ("\nHistorial (YA NO VIGENTE: se olvidó o se reemplazó). Dile al usuario qué era y cuándo ocurrió, "
+            "y ofrécele restaurarlo con restore_memory(trash_id):\n" + "\n".join(out))
 
 def _candidates_text(items) -> str:
     return "\n".join(f"- [ID {fid}] {content}" for fid, content in items)
@@ -115,6 +133,9 @@ def query_memory(text: str) -> str:
             return "No hay nada vigente sobre eso." + hist
         return "Sin coincidencias exactas. Esto es lo guardado:\n" + _all_memories()
     lines = "\n".join(f"Sim: {sim:.2f} | ID: {fid} | {content}" for sim, fid, energy, content in res)
+    best = max((r[0] for r in res), default=0.0)
+    if history and history[0]["sim"] >= best:  # lo borrado se parece mas a la pregunta que lo vigente: va primero
+        return f"{hist.strip()}\n\nOtros recuerdos vigentes (menos relacionados):\n{lines}"
     return f"Recuerdos encontrados:\n{lines}{hist}"
 
 @mcp.tool()
@@ -164,6 +185,18 @@ def forget_memory(fact_id: int | None = None, text: str | None = None) -> str:
         hint = f"\n¿Quizás alguno de estos? Llama de nuevo con su fact_id:\n{_candidates_text(res['suggestions'])}" if res.get("suggestions") else ""
         return f"{res['message']}{hint}"
     return res.get("message", "No se pudo olvidar el recuerdo.")
+
+@mcp.tool()
+def restore_memory(trash_id: int) -> str:
+    """Restaura a la biblioteca un recuerdo de la papelera. Úsala cuando el usuario acepte recuperar un dato que había olvidado o reemplazado.
+    trash_id es el número [papelera n] que muestra query_memory."""
+    _touch_activity()
+    with _quiet():
+        res = engine.restore_from_trash(trash_id, namespace=NS)
+    if res["status"] == "restored":
+        note = f"\nOjo: sigue vigente el valor nuevo que lo reemplazó: {res['current']}. Si ya no lo quiere, bórralo con forget_memory." if res.get("current") else ""
+        return f"Restaurado [ID {res['id']}]: {res['content']}{note}"
+    return res.get("message", "No se pudo restaurar.")
 
 @mcp.tool()
 def empty_trash(trash_id: int | None = None, confirm: bool = False) -> str:

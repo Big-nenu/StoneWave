@@ -28,6 +28,8 @@ INSTRUCTIONS = (
     "Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama inject_memory. "
     "Si el dato es de identidad (nombre, carrera, familia, dónde vive o trabaja), llama inject_memory con fijo=true para que nunca se olvide. "
     "Antes de responder sobre el usuario o su historial, llama query_memory. "
+    "Si el usuario corrige un dato ya guardado, llama update_memory; si pide olvidar o borrar algo, llama forget_memory. "
+    "Ambas usan el ID que aparece como [ID n] en list_memories y query_memory. "
     "Si el usuario quiere ver el grafo de relaciones de su memoria, llama generate_graph (requiere STONEWAVE_GRAPH_ENABLED=true)."
 )
 
@@ -61,23 +63,26 @@ def _quiet():
 
 def _all_memories(limit: int = 30) -> str:
     with _quiet():
-        facts = engine.get_all_facts(namespace=NS)
+        facts = engine.list_facts(namespace=NS)
     if not facts:
         return "La memoria está vacía todavía."
     shown = facts[:limit]
-    text = "\n".join(f"- {f}" for f in shown)
+    text = "\n".join(f"- [ID {fid}]{' (fijo)' if pinned else ''} {content}" for fid, content, _energy, pinned in shown)
     extra = f"\n(Se muestran los {len(shown)} con más energía de {len(facts)})" if len(facts) > len(shown) else ""
     return f"Memoria ({len(facts)} recuerdos):\n{text}{extra}"
 
+def _candidates_text(items) -> str:
+    return "\n".join(f"- [ID {fid}] {content}" for fid, content in items)
+
 @mcp.tool()
 def list_memories(limit: int = 30) -> str:
-    """LLAMA ESTO AL INICIO de CADA CONVERSACIÓN. Devuelve lo que ya se sabe del usuario."""
+    """LLAMA ESTO AL INICIO de CADA CONVERSACIÓN. Devuelve lo que ya se sabe del usuario (cada recuerdo con su [ID n])."""
     _touch_activity()
     return _all_memories(limit)
 
 @mcp.tool()
 def query_memory(text: str) -> str:
-    """Busca recuerdos relacionados con un tema."""
+    """Busca recuerdos relacionados con un tema. Cada resultado trae su ID (sirve para update_memory / forget_memory)."""
     _touch_activity()
     with _quiet():
         res = engine.query(text, namespace=NS)
@@ -87,7 +92,7 @@ def query_memory(text: str) -> str:
         return "Sin coincidencias exactas. Esto es lo guardado:\n" + _all_memories()
     if not res:
         return "Sin coincidencias exactas. Esto es lo guardado:\n" + _all_memories()
-    lines = "\n".join(f"Sim: {sim:.2f} | {content}" for sim, fid, energy, content in res)
+    lines = "\n".join(f"Sim: {sim:.2f} | ID: {fid} | {content}" for sim, fid, energy, content in res)
     return f"Recuerdos encontrados:\n{lines}"
 
 @mcp.tool()
@@ -97,6 +102,46 @@ def inject_memory(content: str, energy: float = 0.5, fijo: bool = False) -> str:
     with _quiet():
         result = engine.inject(content, energy=energy, namespace=NS, pinned=fijo)
     return str(result) if result is not None else "No se pudo guardar."
+
+@mcp.tool()
+def update_memory(fact_id: int, new_content: str) -> str:
+    """Corrige o actualiza el texto de UN recuerdo que ya existe (conserva su energía y si es fijo).
+    Úsala cuando el usuario diga que un dato cambió o estaba mal (ej. "ya no vivo en X, ahora vivo en Y").
+    Necesitas el fact_id: es el número [ID n] que muestran list_memories y query_memory.
+    new_content debe ser la frase completa y corregida, no solo la parte que cambió.
+    No guardes el dato nuevo con inject_memory y borres el viejo: usa esta herramienta."""
+    _touch_activity()
+    with _quiet():
+        res = engine.update_memory(fact_id, new_content, namespace=NS)
+    if res["status"] == "updated":
+        note = f" (Aviso: ya existía otro recuerdo casi igual, ID {res['similar_to']}; considera borrar uno con forget_memory.)" if res.get("similar_to") else ""
+        return f"Recuerdo [ID {res['id']}] actualizado.\nAntes: {res['old']}\nAhora: {res['new']}{note}"
+    return res.get("message", "No se pudo actualizar.")
+
+@mcp.tool()
+def forget_memory(fact_id: int | None = None, text: str | None = None) -> str:
+    """Olvida (borra para siempre) UN recuerdo. Úsala solo cuando el usuario pida olvidar o borrar algo concreto,
+    o cuando un dato ya no sea cierto y no haya nada que lo reemplace (si hay un dato nuevo, usa update_memory).
+    Lo preferible es pasar fact_id: el número [ID n] que muestran list_memories y query_memory.
+    Si solo tienes el texto, pásalo en text: debe ser igual o casi igual al recuerdo guardado.
+    Si text coincide con varios recuerdos NO se borra nada y se devuelve la lista: vuelve a llamar con el fact_id elegido.
+    Para borrar TODO existe clear_memory (pide confirmación al usuario antes)."""
+    _touch_activity()
+    if fact_id is None and not (text and text.strip()):
+        return "Indica fact_id (número del recuerdo) o text (el texto del recuerdo)."
+    with _quiet():
+        res = engine.forget(fact_id if fact_id is not None else text, namespace=NS)
+    status = res["status"]
+    if status == "deleted":
+        where = " (estaba en el sótano)" if res.get("where") == "sotano" else ""
+        ident = f"[ID {res['id']}] " if res.get("id") is not None else ""
+        return f"Olvidado{where}: {ident}{res['content']}"
+    if status == "ambiguous":
+        return f"{res['message']}\n{_candidates_text(res['candidates'])}"
+    if status == "not_found":
+        hint = f"\n¿Quizás alguno de estos? Llama de nuevo con su fact_id:\n{_candidates_text(res['suggestions'])}" if res.get("suggestions") else ""
+        return f"{res['message']}{hint}"
+    return res.get("message", "No se pudo olvidar el recuerdo.")
 
 @mcp.tool()
 def force_dream() -> str:

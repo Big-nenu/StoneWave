@@ -8,6 +8,7 @@ import requests
 import math
 import time
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -171,6 +172,11 @@ class StoneWaveEngine:
                 cursor.execute("ALTER TABLE archived_facts ADD COLUMN reason TEXT")
             if "pinned" not in cols:
                 cursor.execute("ALTER TABLE facts ADD COLUMN pinned INTEGER DEFAULT 0")
+            if "created_at" not in cols:
+                cursor.execute("ALTER TABLE facts ADD COLUMN created_at REAL")
+                cursor.execute("UPDATE facts SET created_at=COALESCE(last_used, ?)", (time.time(),))
+            if "source" not in cols:
+                cursor.execute("ALTER TABLE facts ADD COLUMN source TEXT")
             for topic in CLASSIFICATION_TOPICS:
                 cursor.execute("INSERT OR IGNORE INTO topics (topic_name, description) VALUES (?, ?)", (topic, f"Tema: {topic}"))
             cursor.execute("CREATE TABLE IF NOT EXISTS entities (id INTEGER PRIMARY KEY AUTOINCREMENT, nombre TEXT UNIQUE NOT NULL, tipo TEXT, embedding TEXT)")
@@ -468,7 +474,7 @@ class StoneWaveEngine:
     # ------------------------------------------------------------------
     # Guardar
     # ------------------------------------------------------------------
-    def inject(self, content, energy=0.5, namespace="default", pinned=False):
+    def inject(self, content, energy=0.5, namespace="default", pinned=False, source=None, created_at=None):
         """Guarda un recuerdo. Rapido: no usa LLM. El sueño se encarga de ordenar y enlazar."""
         vec = self.get_embedding(content)
         if vec is None:
@@ -485,8 +491,9 @@ class StoneWaveEngine:
                 conn.commit()
                 return f"🌊 REFUERZO: ya existía un recuerdo casi igual (ID {fid}, Sim: {sim:.2f}). Subió su energía."
             cursor.execute(
-                "INSERT INTO facts (namespace, content, energy, embedding, last_used, pinned) VALUES (?, ?, ?, ?, ?, ?)",
-                (namespace, content, energy, json.dumps(vec), time.time(), 1 if pinned else 0))
+                "INSERT INTO facts (namespace, content, energy, embedding, last_used, pinned, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (namespace, content, energy, json.dumps(vec), time.time(), 1 if pinned else 0,
+                 created_at if created_at is not None else time.time(), source))
             fact_id = cursor.lastrowid
             conn.commit()
         self._cache_add(namespace, fact_id, vec)
@@ -668,6 +675,237 @@ class StoneWaveEngine:
                     cursor.execute("UPDATE facts SET energy=?, last_used=? WHERE id=?", (new_energy, now, fid))
             conn.commit()
         return archived
+
+    # ------------------------------------------------------------------
+    # Listar, editar, borrar, exportar e importar
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _norm_text(text):
+        """Para comparar textos sin importar mayusculas ni espacios de mas."""
+        return " ".join(str(text).split()).casefold()
+
+    @staticmethod
+    def _iso(ts):
+        return None if ts is None else datetime.fromtimestamp(float(ts), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @staticmethod
+    def _parse_created_at(value):
+        """Acepta fecha ISO 8601 o segundos (epoch). Si no se entiende, devuelve None (se usara la hora actual)."""
+        if value is None or value == "" or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            dt = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+
+    def list_facts(self, namespace="default"):
+        """Recuerdos activos como (id, contenido, energia, fijo): fijos primero y luego por energia."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id, content, COALESCE(energy, 0), COALESCE(pinned, 0) FROM facts WHERE namespace=? "
+                "ORDER BY COALESCE(pinned,0) DESC, energy DESC", (namespace,)).fetchall()
+        return [(r[0], r[1], float(r[2]), bool(r[3])) for r in rows]
+
+    def _facts_by_id(self, ids):
+        """[(id, contenido)] de los IDs dados, en el mismo orden."""
+        if not ids:
+            return []
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            found = dict(conn.execute(f"SELECT id, content FROM facts WHERE id IN ({','.join('?' * len(ids))})", list(ids)).fetchall())
+        return [(i, found[i]) for i in ids if i in found]
+
+    def _delete_fact(self, fid, content, namespace):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM facts WHERE id=?", (fid,))
+            conn.execute("DELETE FROM fact_topics WHERE fact_id=?", (fid,))
+            conn.execute("DELETE FROM links WHERE fact_a=? OR fact_b=?", (fid, fid))
+            # copias del mismo texto en el sotano: si se quedaran, la consulta las resucitaria
+            cur = conn.execute("DELETE FROM archived_facts WHERE namespace=? AND content=?", (namespace, content))
+            removed = cur.rowcount
+        return {"status": "deleted", "id": fid, "content": content, "where": "biblioteca", "archived_removed": removed}
+
+    def forget(self, fact_id_or_text, namespace="default"):
+        """Olvida UN recuerdo, por ID (numero) o por texto (igual, o casi igual por similitud).
+
+        Devuelve un dict con 'status':
+          'deleted'   -> se borro (trae 'id', 'content')
+          'ambiguous' -> el texto coincide con varios: NO borra nada; trae 'candidates' [(id, contenido)] para elegir por ID
+          'not_found' -> no hay coincidencia (puede traer 'suggestions' [(id, contenido)])
+          'error'     -> entrada invalida o sin embeddings (trae 'message')
+        Un texto solo de digitos se toma como ID.
+        """
+        key = fact_id_or_text
+        if isinstance(key, str) and key.strip().isdigit():
+            key = int(key.strip())
+        if isinstance(key, bool) or not isinstance(key, (int, str)):
+            return {"status": "error", "message": "forget necesita un ID (numero) o el texto del recuerdo."}
+
+        if isinstance(key, int):
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                row = conn.execute("SELECT id, content FROM facts WHERE id=? AND namespace=?", (key, namespace)).fetchone()
+            if row is None:
+                return {"status": "not_found", "message": f"No hay un recuerdo activo con ID {key} en '{namespace}'."}
+            return self._delete_fact(row[0], row[1], namespace)
+
+        text = key.strip()
+        if not text:
+            return {"status": "error", "message": "Falta el ID o el texto del recuerdo."}
+        wanted = self._norm_text(text)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            candidates = [r for r in conn.execute("SELECT id, content FROM facts WHERE namespace=?", (namespace,))
+                          if self._norm_text(r[1]) == wanted]
+            archived = [] if candidates else [r for r in conn.execute("SELECT id, content FROM archived_facts WHERE namespace=?", (namespace,))
+                                              if self._norm_text(r[1]) == wanted]
+        if not candidates and archived:  # solo existe en el sotano: tambien se puede olvidar
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany("DELETE FROM archived_facts WHERE id=?", [(a[0],) for a in archived])
+            return {"status": "deleted", "id": None, "content": archived[0][1], "where": "sotano", "archived_removed": len(archived)}
+        if not candidates:  # sin coincidencia exacta: por similitud (casi igual)
+            vec = self.get_embedding(text)
+            if vec is None:
+                return {"status": "error", "message": "No se pudo buscar por similitud (sin embeddings). Usa el ID del recuerdo."}
+            ids, sims = self._sims(vec, namespace)
+            close_ids = [i for i, _s in self._top(ids, sims, 3, DUPLICATE_SIM)]
+            if not close_ids:
+                return {"status": "not_found", "message": "Ningun recuerdo es igual o casi igual a ese texto.",
+                        "suggestions": self._facts_by_id([i for i, _s in self._top(ids, sims, 3, MIN_SIM)])}
+            candidates = self._facts_by_id(close_ids)
+        if len(candidates) > 1:
+            return {"status": "ambiguous", "message": f"El texto coincide con {len(candidates)} recuerdos; no se borro nada. Elige uno por ID.",
+                    "candidates": [(c[0], c[1]) for c in candidates]}
+        return self._delete_fact(candidates[0][0], candidates[0][1], namespace)
+
+    def update_memory(self, fact_id, new_content, namespace="default"):
+        """Corrige el texto de un recuerdo por ID. Conserva su energia y si es fijo; recalcula su vector.
+
+        Devuelve un dict con 'status': 'updated' (trae 'id', 'old', 'new' y 'similar_to' si ya hay otro casi igual),
+        'not_found' o 'error'.
+        """
+        try:
+            fid = int(fact_id)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "fact_id debe ser un numero."}
+        new_content = (new_content or "").strip() if isinstance(new_content, str) else ""
+        if not new_content:
+            return {"status": "error", "message": "new_content no puede estar vacio."}
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute("SELECT content FROM facts WHERE id=? AND namespace=?", (fid, namespace)).fetchone()
+        if row is None:
+            return {"status": "not_found", "message": f"No hay un recuerdo activo con ID {fid} en '{namespace}'."}
+        vec = self.get_embedding(new_content)
+        if vec is None:
+            return {"status": "error", "message": "No se obtuvo embedding; el recuerdo no se modifico."}
+        ids, sims = self._sims(vec, namespace)
+        twins = [i for i, _s in self._top(ids, sims, 3, DUPLICATE_SIM) if i != fid]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE facts SET content=?, embedding=?, last_used=? WHERE id=?", (new_content, json.dumps(vec), time.time(), fid))
+            conn.execute("DELETE FROM fact_topics WHERE fact_id=?", (fid,))  # el sueño lo vuelve a clasificar
+            conn.execute("DELETE FROM links WHERE fact_a=? OR fact_b=?", (fid, fid))  # y a enlazar
+        return {"status": "updated", "id": fid, "old": row[0], "new": new_content, "similar_to": twins[0] if twins else None}
+
+    def export_memories(self, path, namespace=None):
+        """Exporta los recuerdos activos a un .jsonl canonico (un objeto JSON por linea).
+
+        Campos: content, namespace, fijo, energy, created_at (ISO 8601 UTC), source.
+        namespace=None exporta todos los namespaces. El sotano no se exporta. Devuelve cuantos recuerdos escribio.
+        """
+        sql = "SELECT namespace, content, energy, pinned, COALESCE(created_at, last_used), source FROM facts"
+        args = ()
+        if namespace:
+            sql += " WHERE namespace=?"
+            args = (namespace,)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(sql + " ORDER BY namespace, id", args).fetchall()
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            for ns, content, energy, pinned, ts, source in rows:
+                f.write(json.dumps({
+                    "content": content, "namespace": ns, "fijo": bool(pinned),
+                    "energy": round(float(energy if energy is not None else 0.5), 3),
+                    "created_at": self._iso(ts), "source": source or "stonewave",
+                }, ensure_ascii=False) + "\n")
+        return len(rows)
+
+    def import_records(self, records, namespace=None, run_dream=True, default_source="import"):
+        """Importa recuerdos (dicts con el formato canonico) llamando a inject() con cada uno.
+
+        namespace: si se da, TODOS van a ese namespace; si no, se respeta el de cada registro (o 'default').
+        Al terminar corre dream() en cada namespace donde entraron recuerdos nuevos (run_dream=True).
+        Si Ollama no responde 3 veces seguidas, se detiene. Devuelve un dict resumen:
+        new, reinforced, errors, aborted, invalid [(linea, motivo)], namespaces, dream [mensajes].
+        """
+        summary = {"new": 0, "reinforced": 0, "errors": 0, "aborted": False, "invalid": [], "namespaces": [], "dream": []}
+        new_in, consecutive = [], 0
+        for n, rec in enumerate(records, 1):
+            where = rec.get("_line", n) if isinstance(rec, dict) else n
+            if not isinstance(rec, dict):
+                summary["invalid"].append((where, "no es un objeto JSON"))
+                continue
+            content = rec.get("content")
+            if not isinstance(content, str) or not content.strip():
+                summary["invalid"].append((where, "falta 'content' (texto del recuerdo)"))
+                continue
+            ns = namespace or rec.get("namespace") or "default"
+            if not isinstance(ns, str) or not ns.strip() or len(ns) > 100:
+                summary["invalid"].append((where, "'namespace' debe ser un texto de 1 a 100 caracteres"))
+                continue
+            try:
+                energy = min(1.0, max(0.0, float(rec.get("energy", 0.5))))
+            except (TypeError, ValueError):
+                summary["invalid"].append((where, "'energy' debe ser un numero entre 0 y 1"))
+                continue
+            msg = self.inject(content.strip(), energy=energy, namespace=ns, pinned=bool(rec.get("fijo", False)),
+                              source=str(rec.get("source") or default_source),
+                              created_at=self._parse_created_at(rec.get("created_at")))
+            if "ERROR" in msg:
+                summary["errors"] += 1
+                consecutive += 1
+                if consecutive >= 3:
+                    summary["aborted"] = True
+                    break
+                continue
+            consecutive = 0
+            if ns not in summary["namespaces"]:
+                summary["namespaces"].append(ns)
+            if "NUEVA" in msg:
+                summary["new"] += 1
+                if ns not in new_in:
+                    new_in.append(ns)
+            else:
+                summary["reinforced"] += 1
+        if run_dream:
+            for ns in new_in:
+                try:
+                    summary["dream"].append(self.dream(namespace=ns))
+                except Exception as ex:  # el sueño es un extra: no debe tirar la importacion
+                    summary["dream"].append(f"El sueño de '{ns}' fallo: {ex}")
+        return summary
+
+    def import_memories(self, path, namespace=None, run_dream=True):
+        """Importa un .jsonl canonico (ver export_memories). Las lineas invalidas se reportan, no detienen la importacion."""
+        records, invalid = [], []
+        with open(path, encoding="utf-8-sig") as f:  # utf-8-sig tolera el BOM de Windows
+            for ln, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    invalid.append((ln, "JSON invalido"))
+                    continue
+                if not isinstance(rec, dict):
+                    invalid.append((ln, "no es un objeto JSON"))
+                    continue
+                rec["_line"] = ln
+                records.append(rec)
+        summary = self.import_records(records, namespace=namespace, run_dream=run_dream)
+        summary["invalid"] = sorted(invalid + summary["invalid"])
+        return summary
 
     def get_all_facts(self, namespace="default"):
         with sqlite3.connect(self.db_path) as conn:

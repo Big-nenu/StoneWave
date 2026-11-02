@@ -94,7 +94,7 @@ Sobre las piedras, con esta muestra chica: en preguntas de un solo hecho una pie
 ```bash
 git clone https://github.com/Big-nenu/StoneWave.git
 cd StoneWave
-pip install mcp requests numpy
+pip install -r requirements.txt   # fija mcp<2: la serie 2.x cambió la API y rompe el servidor
 ```
 
 Modelos de Ollama:
@@ -222,9 +222,60 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `force_dream` | Sueño: archiva lo que no se usa, clasifica por tema y enlaza recuerdos parecidos |
 | `trigger_reflection` | Genera una intuición nueva |
 | `generate_graph` | Grafo HTML de entidades y relaciones (requiere `STONEWAVE_GRAPH_ENABLED=true`) |
+| `update_memory` | Corrige el texto de un recuerdo por su ID (conserva energía y si es fijo) |
+| `forget_memory` | Borra un recuerdo por ID, o por texto (si hay varias coincidencias pide el ID) |
 | `clear_memory` | Borra todo el namespace (irreversible) |
 
-También hay una CLI: `python mem_cli.py inject|query|dream|reflect|clear|doctor`.
+También hay una CLI: `python mem_cli.py inject|query|dream|reflect|clear|doctor|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
+
+## Editar, borrar, importar y exportar
+
+### Corregir u olvidar un recuerdo
+
+El agente ve cada recuerdo con su ID (`[ID 12]`) en `list_memories` y `query_memory`, y con eso puede:
+
+- **`update_memory(fact_id, new_content)`**: corrige el texto de un recuerdo (conserva su energía y si es fijo, y recalcula su vector). Es lo que debe usar cuando un dato cambió ("ya no vivo en X, ahora vivo en Y"), en vez de guardar uno nuevo y dejar el viejo.
+- **`forget_memory(fact_id=..., text=...)`**: borra un recuerdo. Con `fact_id` borra ese. Con `text` busca uno igual (sin importar mayúsculas) o casi igual (similitud ≥ 0.90). **Si el texto coincide con varios, no borra nada** y devuelve la lista con sus IDs para que el agente vuelva a llamar con el `fact_id` elegido. También borra la copia que haya en el sótano, para que la consulta no lo resucite.
+
+Desde Python: `engine.forget(id_o_texto)` y `engine.update_memory(fact_id, texto_nuevo)` devuelven un diccionario con `status` (`deleted`, `updated`, `ambiguous`, `not_found` o `error`).
+
+### Formato universal `.jsonl`
+
+Un objeto JSON por línea. Solo `content` es obligatorio:
+
+```json
+{"content": "Trabajo en Neodata en Guadalajara", "namespace": "default", "fijo": false, "energy": 0.5, "created_at": "2026-01-01T00:00:00Z", "source": "claude"}
+```
+
+| Campo | Qué es |
+|---|---|
+| `content` | El texto del recuerdo (obligatorio) |
+| `namespace` | Namespace de destino (default: `default`) |
+| `fijo` | `true` para identidad: nunca decae ni se archiva |
+| `energy` | De 0 a 1 (default: 0.5) |
+| `created_at` | Fecha ISO 8601 o segundos desde 1970; si falta, se usa la hora de la importación |
+| `source` | De dónde vino (`stonewave`, `mcp-memory`, `import`...) |
+
+```bash
+python mem_cli.py export backup.jsonl              # todos los namespaces
+python mem_cli.py export backup.jsonl -n trabajo   # solo un namespace
+python mem_cli.py import backup.jsonl              # respeta el namespace de cada línea
+python mem_cli.py import backup.jsonl -n nuevo     # todo va a ese namespace
+python mem_cli.py import backup.jsonl --no-dream   # sin sueño al terminar
+```
+
+Al importar, cada línea pasa por `inject()` (lo que ya existe solo se refuerza, así que importar dos veces no duplica) y, si entraron recuerdos nuevos, se corre `dream()` en esos namespaces para clasificarlos y enlazarlos. Las líneas inválidas se reportan con su número y no detienen la importación. Si Ollama no responde 3 veces seguidas, se detiene (vuelve a correr el comando cuando esté arriba). El sótano no se exporta.
+
+### Traer la memoria de otra herramienta
+
+Cada fuente solo necesita un adaptador que escriba ese `.jsonl`. El primero es el del MCP oficial de Anthropic (`@modelcontextprotocol/server-memory`), cuyo `memory.jsonl` guarda entidades con observaciones y relaciones:
+
+```bash
+python mem_cli.py import memory.jsonl --from mcp-memory -n default      # convierte e importa
+python parsers/mcp_parser.py memory.jsonl salida.jsonl --fijo Luis      # o solo convierte (revísalo antes de importar)
+```
+
+Cada observación se vuelve un recuerdo (`Luis: Works at Neodata`) y cada relación otro (`Luis works at Neodata`). Con `--fijo NOMBRE` (se puede repetir) los recuerdos de esa entidad entran como fijos. Para otras fuentes (Claude, ChatGPT, notas en Markdown) basta con generar el `.jsonl` con los campos de arriba.
 
 ## Probar
 
@@ -335,7 +386,7 @@ Formato de un caso (una línea JSON por caso en el `.jsonl`):
 
 - **"Connection closed" / servidor en rojo:** el script falla al arrancar. Ejecútalo a mano (`python mcp_server.py`) y lee el error.
 - **`spawn ENOENT`:** tu agente no encuentra `python`. Usa la ruta completa (`where python` en Windows).
-- **`No module named 'mcp'`:** instala con `pip install mcp requests numpy` en el mismo Python que usa tu agente.
+- **`No module named 'mcp'`:** instala con `pip install -r requirements.txt` (usa `mcp<2`) en el mismo Python que usa tu agente.
 - **Dice que la memoria está vacía:** casi siempre es otra ruta de BD u otro namespace en la config.
 
 ## Estructura
@@ -344,9 +395,11 @@ Formato de un caso (una línea JSON por caso en el `.jsonl`):
 mcp_server.py    # servidor MCP (StoneWave)
 mem_engine.py    # motor de memoria (inyectar, consultar, soñar, reflexionar)
 graph_engine.py  # grafo de entidades (opcional)
-mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor)
+mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor, import, export)
 doctor.py        # reporte de salud de la memoria (solo lectura)
 api.py           # API HTTP local (solo biblioteca estandar)
+requirements.txt # dependencias (pip install -r requirements.txt)
+parsers/         # adaptadores a .jsonl (mcp_parser.py: memory.jsonl del MCP oficial de Anthropic)
 LICENSE          # licencia MIT
 scripts/         # benchmark_stones.py: MemBench (esqueleto de benchmark)
 tests/           # test_engine.py, test_api.py, test_doctor.py y test_benchmark.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
@@ -376,6 +429,9 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Esqueleto de MemBench (`scripts/benchmark_stones.py`: inyecta → dream → query → compara con lo esperado) | Hecho (el viejo `tests/benchmark_runner.py` mide fusión y quedó obsoleto) |
 | Dataset grande de MemBench (unos 50 casos: varios hechos, contradicciones, sótano) | Pendiente |
 | API HTTP local para agentes sin MCP (`api.py`: `/inject`, `/query`, `/dream`) | Hecho |
+| Borrar y corregir recuerdos (`forget_memory`, `update_memory`) | Hecho |
+| Importar/exportar en `.jsonl` universal + adaptador del MCP `memory` | Hecho |
+| Adaptadores para otras fuentes (Claude, ChatGPT, Markdown) | Idea |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |
 | Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |
 

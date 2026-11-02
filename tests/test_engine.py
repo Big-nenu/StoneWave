@@ -408,6 +408,53 @@ def test_cli_import_y_export():
         mem_cli.StoneWaveEngine, sys.argv = old_engine, old_argv
 
 
+def test_papelera_guarda_lo_olvidado_y_lo_encuentra():
+    e = make_engine()
+    C = "Mi color favorito es el azul marino"
+    e.inject(C)
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    assert e.forget(_ids(e)[C])["status"] == "deleted"
+    assert e.query("color favorito azul marino") == "No related memories found."  # ya no esta vigente
+    hits = e.query_trash("mi color favorito")
+    assert hits and hits[0]["content"] == C and hits[0]["reason"] == "olvidado" and hits[0]["current"] is None, hits
+    assert e.query_trash("mi color favorito", namespace="otro") == []
+
+
+def test_papelera_reemplazado_apunta_al_valor_actual():
+    e = make_engine()
+    old, new = "Vivo en Guadalajara con mis papás", "Vivo en Monterrey con mi pareja"
+    e.inject(old)
+    fid = _ids(e)[old]
+    assert e.update_memory(fid, new)["status"] == "updated"
+    hits = e.query_trash("vivo guadalajara papás")
+    assert hits and hits[0]["reason"] == "reemplazado" and hits[0]["current"] == new, hits
+    e.update_memory(fid, "  " + new.upper() + " ")  # mismo texto escrito distinto: no ensucia la papelera
+    assert len(e.list_trash()) == 1
+
+
+def test_papelera_sotano_y_borrado_definitivo():
+    e = make_engine()
+    H = "El helado de vainilla es muy rico en verano"
+    G = "Los gatos duermen mucho durante el día"
+    e.inject(H)
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    age(e.db_path, 200, "content LIKE '%helado%'")
+    e.decay()
+    assert e.forget(H)["where"] == "sotano"  # solo estaba en el sotano: tambien va a la papelera
+    assert [t[1] for t in e.list_trash()] == [H]
+    e.inject(G)
+    assert e.forget(_ids(e)[G])["status"] == "deleted"
+    assert len(e.list_trash()) == 2
+    assert e.purge_trash(trash_id=e.list_trash()[0][0]) == 1
+    assert len(e.list_trash()) == 1
+    assert e.purge_trash() == 1 and e.list_trash() == []
+    e.inject(H)
+    e.forget(_ids(e)[H])
+    assert len(e.list_trash()) == 1
+    e.clear_db()  # borrar todo tambien vacia la papelera
+    assert e.list_trash() == []
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

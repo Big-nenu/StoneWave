@@ -15,7 +15,7 @@ StoneWave nace de mezclar dos memorias que le gustaron a su autor:
 - **Holographic** (de Hermes): hechos con entidades y confianza.
 - **MemFS**: una memoria que se mejora sola mientras la IA no se está usando (el "sueño").
 
-Cuatro piezas:
+Cinco piezas:
 
 | Pieza | Qué es |
 |---|---|
@@ -23,6 +23,7 @@ Cuatro piezas:
 | **Sótano** (`archived_facts`) | Recuerdos que llevan tiempo sin usarse o perdieron energía. Nunca se borran, esperan ahí. |
 | **Sueño** (`dream`) | Se ejecuta cuando no se usa la IA. Revisa la memoria, la ordena y manda lo viejo al sótano. |
 | **Ondas / piedras** | La forma de consultar (ver abajo). |
+| **Papelera** (`trash`) | Lo que se olvidó (`forget_memory`) o se reemplazó (`update_memory`). Solo informa, nunca resucita sola. Ver «Papelera». |
 
 ### Consulta por ondas (las 5 piedras)
 
@@ -236,14 +237,15 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | Herramienta | Qué hace |
 |---|---|
 | `list_memories` | Lista lo que ya se sabe del usuario (se llama al inicio de cada chat) |
-| `query_memory` | Busca recuerdos relacionados con un tema |
+| `query_memory` | Busca recuerdos relacionados con un tema (y avisa, como historial, si el tema estaba en la papelera) |
 | `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |
 | `force_dream` | Sueño: archiva lo que no se usa, clasifica por tema y enlaza recuerdos parecidos |
 | `trigger_reflection` | Genera una intuición nueva |
 | `generate_graph` | Grafo HTML de entidades y relaciones (requiere `STONEWAVE_GRAPH_ENABLED=true`) |
 | `update_memory` | Corrige el texto de un recuerdo por su ID (conserva energía y si es fijo) |
 | `forget_memory` | Borra un recuerdo por ID, o por texto (si hay varias coincidencias pide el ID) |
-| `clear_memory` | Borra todo el namespace (irreversible) |
+| `clear_memory` | Borra todo el namespace, incluida su papelera (irreversible) |
+| `empty_trash` | Borra de verdad lo de la papelera (uno por ID, o todo con `confirm=true`) |
 
 También hay una CLI: `python mem_cli.py inject|query|dream|reflect|clear|doctor|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
 
@@ -257,6 +259,15 @@ El agente ve cada recuerdo con su ID (`[ID 12]`) en `list_memories` y `query_mem
 - **`forget_memory(fact_id=..., text=...)`**: borra un recuerdo. Con `fact_id` borra ese. Con `text` busca uno igual (sin importar mayúsculas) o casi igual (similitud ≥ 0.90). **Si el texto coincide con varios, no borra nada** y devuelve la lista con sus IDs para que el agente vuelva a llamar con el `fact_id` elegido. También borra la copia que haya en el sótano, para que la consulta no lo resucite.
 
 Desde Python: `engine.forget(id_o_texto)` y `engine.update_memory(fact_id, texto_nuevo)` devuelven un diccionario con `status` (`deleted`, `updated`, `ambiguous`, `not_found` o `error`).
+
+### Papelera (lo olvidado)
+
+Cuando un recuerdo se borra con `forget_memory` o se corrige con `update_memory`, el texto anterior no desaparece sin más: pasa a la **papelera** (tabla `trash`, con su vector, el motivo `olvidado` o `reemplazado` y la fecha). Sirve para que el agente pueda decir *"ya no tienes ese dato porque lo borraste"* o *"tenías esto y lo reemplazaste por esto otro"*, en vez de contestar que nunca supo nada.
+
+- **Solo informa:** a diferencia del sótano, la papelera **nunca resucita** un recuerdo sola ni entra en el resultado normal de `query`.
+- **Consulta:** `query_memory` busca en la biblioteca (y el sótano) como siempre y, además, por similitud en la papelera. Si hay coincidencias las muestra aparte, bajo "Historial (YA NO VIGENTE...)"; si el recuerdo fue reemplazado, muestra también el valor actual. Desde Python: `engine.query_trash(texto)`, `engine.list_trash()`.
+- **Privacidad:** si quieres que algo se olvide por completo, `empty_trash` lo borra de verdad (uno por ID, o toda la papelera con `confirm=true`). `clear_memory` también vacía la papelera del namespace. El sueño no toca la papelera.
+- La papelera no se exporta a `.jsonl` ni la expone la API HTTP.
 
 ### Formato universal `.jsonl`
 
@@ -315,7 +326,7 @@ python mem_cli.py doctor -n trabajo # otro namespace
 Es de **solo lectura** (no abre el motor ni modifica nada) e imprime un reporte rápido:
 
 - **Base de datos:** ruta, conexión, tamaño de `memoria.db` y chequeo de integridad.
-- **Recuerdos:** activos vs. en el sótano (con el motivo: desuso o contradicción), fijos y enlaces.
+- **Recuerdos:** activos vs. en el sótano (con el motivo: desuso o contradicción), fijos, enlaces y papelera.
 - **Ollama:** si responde, y si los modelos de embeddings (`embeddinggemma-2:270m`) y de decisión (`tev1:0.8b`) están instalados y contestan de verdad, con su tiempo de respuesta.
 - **Sueño:** fecha y hora del último ciclo (y si el automático está activado).
 - **Entorno:** si numpy está instalado.
@@ -450,6 +461,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Dataset grande de MemBench (unos 50 casos: varios hechos, contradicciones, sótano) | Pendiente |
 | API HTTP local para agentes sin MCP (`api.py`: `/inject`, `/query`, `/dream`) | Hecho |
 | Borrar y corregir recuerdos (`forget_memory`, `update_memory`) | Hecho |
+| Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |
 | Importar/exportar en `.jsonl` universal + adaptador del MCP `memory` | Hecho |
 | Adaptadores para otras fuentes (Claude, ChatGPT, Markdown) | Idea |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |

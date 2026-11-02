@@ -120,7 +120,7 @@ class StoneWaveEngine:
             row = conn.execute("SELECT value FROM meta WHERE key='embed_scheme'").fetchone()
             if row and row[0] == scheme:
                 return
-            n = conn.execute("SELECT (SELECT COUNT(*) FROM facts) + (SELECT COUNT(*) FROM archived_facts)").fetchone()[0]
+            n = conn.execute("SELECT (SELECT COUNT(*) FROM facts) + (SELECT COUNT(*) FROM archived_facts) + (SELECT COUNT(*) FROM trash)").fetchone()[0]
             if n == 0:
                 conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('embed_scheme', ?)", (scheme,))
                 conn.commit()
@@ -130,7 +130,7 @@ class StoneWaveEngine:
             shutil.copy2(self.db_path, bak)
         print(f"StoneWave: recalculando los embeddings de {n} recuerdos (respaldo en {bak})", file=sys.stderr)
         updates = []
-        for table in ("facts", "archived_facts"):
+        for table in ("facts", "archived_facts", "trash"):
             with closing(sqlite3.connect(self.db_path)) as conn:
                 rows = conn.execute(f"SELECT id, content FROM {table}").fetchall()
             for start in range(0, len(rows), 32):
@@ -159,6 +159,8 @@ class StoneWaveEngine:
             cursor.execute("CREATE TABLE IF NOT EXISTS fact_topics (fact_id INTEGER NOT NULL, topic_id INTEGER NOT NULL, FOREIGN KEY (fact_id) REFERENCES facts(id), FOREIGN KEY (topic_id) REFERENCES topics(id), PRIMARY KEY (fact_id, topic_id))")
             cursor.execute("CREATE TABLE IF NOT EXISTS links (fact_a INTEGER NOT NULL, fact_b INTEGER NOT NULL, sim REAL, kind TEXT, PRIMARY KEY (fact_a, fact_b))")
             cursor.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+            cursor.execute("CREATE TABLE IF NOT EXISTS trash (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT DEFAULT 'default', content TEXT, energy REAL, embedding TEXT, reason TEXT, replaced_by INTEGER, deleted_at REAL)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_trash_namespace ON trash(namespace)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_facts_namespace ON facts(namespace)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fact_topics_topic ON fact_topics(topic_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fact_topics_fact ON fact_topics(fact_id)")
@@ -193,10 +195,12 @@ class StoneWaveEngine:
                 cursor.execute("DELETE FROM links WHERE fact_a IN (SELECT id FROM facts WHERE namespace=?) OR fact_b IN (SELECT id FROM facts WHERE namespace=?)", (namespace, namespace))
                 cursor.execute("DELETE FROM facts WHERE namespace=?", (namespace,))
                 cursor.execute("DELETE FROM archived_facts WHERE namespace=?", (namespace,))
+                cursor.execute("DELETE FROM trash WHERE namespace=?", (namespace,))
             else:
                 cursor.execute("DELETE FROM links")
                 cursor.execute("DELETE FROM facts")
                 cursor.execute("DELETE FROM archived_facts")
+                cursor.execute("DELETE FROM trash")
             conn.commit()
 
     def print_table(self, table="facts"):
@@ -721,6 +725,9 @@ class StoneWaveEngine:
 
     def _delete_fact(self, fid, content, namespace):
         with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT energy, embedding FROM facts WHERE id=?", (fid,)).fetchone()
+            if row:  # lo olvidado no se pierde del todo: pasa a la papelera (solo informa, no resucita)
+                self._to_trash(conn, namespace, content, row[0], row[1], "olvidado")
             conn.execute("DELETE FROM facts WHERE id=?", (fid,))
             conn.execute("DELETE FROM fact_topics WHERE fact_id=?", (fid,))
             conn.execute("DELETE FROM links WHERE fact_a=? OR fact_b=?", (fid, fid))
@@ -763,6 +770,9 @@ class StoneWaveEngine:
                                               if self._norm_text(r[1]) == wanted]
         if not candidates and archived:  # solo existe en el sotano: tambien se puede olvidar
             with sqlite3.connect(self.db_path) as conn:
+                a0 = conn.execute("SELECT energy, embedding FROM archived_facts WHERE id=?", (archived[0][0],)).fetchone()
+                if a0:
+                    self._to_trash(conn, namespace, archived[0][1], a0[0], a0[1], "olvidado")
                 conn.executemany("DELETE FROM archived_facts WHERE id=?", [(a[0],) for a in archived])
             return {"status": "deleted", "id": None, "content": archived[0][1], "where": "sotano", "archived_removed": len(archived)}
         if not candidates:  # sin coincidencia exacta: por similitud (casi igual)
@@ -803,10 +813,71 @@ class StoneWaveEngine:
         ids, sims = self._sims(vec, namespace)
         twins = [i for i, _s in self._top(ids, sims, 3, DUPLICATE_SIM) if i != fid]
         with sqlite3.connect(self.db_path) as conn:
+            old = conn.execute("SELECT energy, embedding FROM facts WHERE id=?", (fid,)).fetchone()
+            if old and self._norm_text(row[0]) != self._norm_text(new_content):  # el texto viejo queda en la papelera como 'reemplazado'
+                self._to_trash(conn, namespace, row[0], old[0], old[1], "reemplazado", fid)
             conn.execute("UPDATE facts SET content=?, embedding=?, last_used=? WHERE id=?", (new_content, json.dumps(vec), time.time(), fid))
             conn.execute("DELETE FROM fact_topics WHERE fact_id=?", (fid,))  # el sueño lo vuelve a clasificar
             conn.execute("DELETE FROM links WHERE fact_a=? OR fact_b=?", (fid, fid))  # y a enlazar
         return {"status": "updated", "id": fid, "old": row[0], "new": new_content, "similar_to": twins[0] if twins else None}
+
+    # ------------------------------------------------------------------
+    # Papelera (trash): lo olvidado y lo reemplazado. Solo informa; nunca resucita sola.
+    # ------------------------------------------------------------------
+    def _to_trash(self, conn, namespace, content, energy, embedding, reason, replaced_by=None):
+        """Guarda un recuerdo en la papelera usando la conexion dada. Si ya esta el mismo texto con el mismo motivo, solo renueva la fecha."""
+        now = time.time()
+        row = conn.execute("SELECT id FROM trash WHERE namespace=? AND content=? AND reason=?", (namespace, content, reason)).fetchone()
+        if row:
+            conn.execute("UPDATE trash SET deleted_at=?, replaced_by=? WHERE id=?", (now, replaced_by, row[0]))
+        else:
+            conn.execute("INSERT INTO trash (namespace, content, energy, embedding, reason, replaced_by, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (namespace, content, energy, embedding, reason, replaced_by, now))
+
+    def query_trash(self, text, namespace="default", limit=3):
+        """Busca en la papelera lo que se parezca a 'text'. No modifica nada ni resucita nada.
+
+        Devuelve una lista de dicts: sim, id, content, reason ('olvidado' | 'reemplazado'), deleted_at (ISO) y
+        current (el texto que lo reemplazo, si sigue activo; si no, None).
+        """
+        vecs = self.get_embeddings([text])
+        if not vecs or vecs[0] is None:
+            return []
+        ids, sims = self._sims(vecs[0], namespace, "trash")
+        top = self._top(ids, sims, limit, MIN_SIM)
+        if not top:
+            return []
+        q = ",".join("?" * len(top))
+        out = []
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = {r[0]: r[1:] for r in conn.execute(
+                f"SELECT id, content, reason, replaced_by, deleted_at FROM trash WHERE id IN ({q})", [i for i, _s in top])}
+            for tid, sim in top:
+                if tid not in rows:
+                    continue
+                content, reason, replaced_by, deleted_at = rows[tid]
+                current = None
+                if replaced_by is not None:
+                    r = conn.execute("SELECT content FROM facts WHERE id=? AND namespace=?", (replaced_by, namespace)).fetchone()
+                    current = r[0] if r else None
+                out.append({"sim": float(sim), "id": tid, "content": content, "reason": reason,
+                            "deleted_at": self._iso(deleted_at), "current": current})
+        return out
+
+    def list_trash(self, namespace="default"):
+        """Papelera como (id, contenido, motivo, fecha ISO), lo mas reciente primero."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute("SELECT id, content, reason, deleted_at FROM trash WHERE namespace=? ORDER BY deleted_at DESC, id DESC", (namespace,)).fetchall()
+        return [(r[0], r[1], r[2], self._iso(r[3])) for r in rows]
+
+    def purge_trash(self, namespace="default", trash_id=None):
+        """Borra DE VERDAD de la papelera: uno por ID, o todo el namespace si trash_id es None. Devuelve cuantos borro."""
+        with sqlite3.connect(self.db_path) as conn:
+            if trash_id is None:
+                cur = conn.execute("DELETE FROM trash WHERE namespace=?", (namespace,))
+            else:
+                cur = conn.execute("DELETE FROM trash WHERE namespace=? AND id=?", (namespace, int(trash_id)))
+            return cur.rowcount
 
     def export_memories(self, path, namespace=None):
         """Exporta los recuerdos activos a un .jsonl canonico (un objeto JSON por linea).

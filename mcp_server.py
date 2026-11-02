@@ -31,6 +31,7 @@ INSTRUCTIONS = (
     "Antes de responder sobre el usuario o su historial, llama query_memory. "
     "Si el usuario corrige un dato ya guardado, llama update_memory; si pide olvidar o borrar algo, llama forget_memory. "
     "Ambas usan el ID que aparece como [ID n] en list_memories y query_memory. "
+    "query_memory también revisa la papelera (lo olvidado o reemplazado): si devuelve un Historial, ese dato YA NO ESTÁ VIGENTE; dile al usuario que lo borró o lo cambió (y por qué valor). "
     "Si el usuario quiere ver el grafo de relaciones de su memoria, llama generate_graph (requiere STONEWAVE_GRAPH_ENABLED=true)."
 )
 
@@ -72,6 +73,20 @@ def _all_memories(limit: int = 30) -> str:
     extra = f"\n(Se muestran los {len(shown)} con más energía de {len(facts)})" if len(facts) > len(shown) else ""
     return f"Memoria ({len(facts)} recuerdos):\n{text}{extra}"
 
+def _history_text(hits) -> str:
+    """Papelera: lo que se olvidó o se reemplazó. NO está vigente; solo da contexto."""
+    if not hits:
+        return ""
+    out = []
+    for h in hits:
+        when = (h.get("deleted_at") or "")[:10]
+        if h["reason"] == "reemplazado":
+            now = f"; ahora: {h['current']}" if h.get("current") else ""
+            out.append(f"- [papelera {h['id']}] (reemplazado el {when}{now}) {h['content']}")
+        else:
+            out.append(f"- [papelera {h['id']}] (olvidado el {when}) {h['content']}")
+    return "\nHistorial (YA NO VIGENTE; estaba guardado y se olvidó o se reemplazó):\n" + "\n".join(out)
+
 def _candidates_text(items) -> str:
     return "\n".join(f"- [ID {fid}] {content}" for fid, content in items)
 
@@ -87,14 +102,20 @@ def query_memory(text: str) -> str:
     _touch_activity()
     with _quiet():
         res = engine.query(text, namespace=NS)
+        history = engine.query_trash(text, namespace=NS, limit=2)
+    hist = _history_text(history)
     if isinstance(res, str):
         if res.startswith("Error"):
             return f"No se pudo buscar ({res})."
+        if hist:
+            return "No hay nada vigente sobre eso." + hist
         return "Sin coincidencias exactas. Esto es lo guardado:\n" + _all_memories()
     if not res:
+        if hist:
+            return "No hay nada vigente sobre eso." + hist
         return "Sin coincidencias exactas. Esto es lo guardado:\n" + _all_memories()
     lines = "\n".join(f"Sim: {sim:.2f} | ID: {fid} | {content}" for sim, fid, energy, content in res)
-    return f"Recuerdos encontrados:\n{lines}"
+    return f"Recuerdos encontrados:\n{lines}{hist}"
 
 @mcp.tool()
 def inject_memory(content: str, energy: float = 0.5, fijo: bool = False) -> str:
@@ -145,6 +166,18 @@ def forget_memory(fact_id: int | None = None, text: str | None = None) -> str:
     return res.get("message", "No se pudo olvidar el recuerdo.")
 
 @mcp.tool()
+def empty_trash(trash_id: int | None = None, confirm: bool = False) -> str:
+    """Borra DE VERDAD lo que hay en la papelera (lo olvidado o reemplazado). Irreversible.
+    Úsala solo si el usuario pide que algo se olvide por completo. Con trash_id (el número [papelera n]) borra uno;
+    sin él vacía TODA la papelera y exige confirm=true (pide confirmación al usuario antes)."""
+    _touch_activity()
+    if trash_id is None and not confirm:
+        return "Cancelado: para vaciar toda la papelera falta confirm=true (o pasa trash_id para borrar solo uno)."
+    with _quiet():
+        n = engine.purge_trash(namespace=NS, trash_id=trash_id)
+    return f"Papelera: {n} recuerdo(s) borrado(s) para siempre." if n else "No había nada que borrar en la papelera."
+
+@mcp.tool()
 def force_dream() -> str:
     """Sueño: baja al sótano lo que no se usa, clasifica por temas y enlaza recuerdos parecidos (no reescribe nada)."""
     _touch_activity()
@@ -162,7 +195,7 @@ def trigger_reflection() -> str:
 
 @mcp.tool()
 def clear_memory(confirm: bool = False) -> str:
-    """BORRA TODA la memoria. Irreversible."""
+    """BORRA TODA la memoria (incluida su papelera). Irreversible."""
     _touch_activity()
     if not confirm:
         return "Cancelado: falta confirm=true."

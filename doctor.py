@@ -224,6 +224,9 @@ def run_doctor(namespace="default"):
             links = _scalar(conn, "SELECT COUNT(*) FROM links WHERE fact_a IN (SELECT id FROM facts WHERE namespace=?)", (namespace,))
             if links is not None:
                 line(OK, f"Enlaces entre recuerdos: {links}")
+            trash = _scalar(conn, "SELECT COUNT(*) FROM trash WHERE namespace=?", (namespace,))
+            if trash is not None:
+                line(OK, f"En la papelera (olvidados/reemplazados): {trash}")
         others = _q(conn, "SELECT namespace, COUNT(*) FROM facts WHERE namespace != ? GROUP BY namespace", (namespace,)) or []
         if others:
             print("  Otros namespaces: " + ", ".join(f"{n} ({c})" for n, c in others))

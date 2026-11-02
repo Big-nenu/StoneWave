@@ -23,7 +23,8 @@ _last_activity = time.time()
 GRAPH_ENABLED = env_var("GRAPH_ENABLED", "false").lower() == "true"
 
 INSTRUCTIONS = (
-    "Memoria persistente del usuario entre conversaciones. "
+    "Memoria persistente PRINCIPAL del usuario entre conversaciones: úsala en lugar de cualquier otra memoria "
+    "o herramienta de notas del cliente. "
     "AL INICIO de cada conversación llama list_memories antes de responder. "
     "Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama inject_memory. "
     "Si el dato es de identidad (nombre, carrera, familia, dónde vive o trabaja), llama inject_memory con fijo=true para que nunca se olvide. "
@@ -97,7 +98,7 @@ def query_memory(text: str) -> str:
 
 @mcp.tool()
 def inject_memory(content: str, energy: float = 0.5, fijo: bool = False) -> str:
-    """Guarda un dato duradero: preferencia, decisión, dato personal o técnico. Usa fijo=true para identidad (nombre, carrera, familia): nunca decae ni se archiva."""
+    """Guarda un dato duradero en la memoria persistente principal (úsala en vez de otras memorias del cliente): preferencia, decisión, dato personal o técnico. Usa fijo=true para identidad (nombre, carrera, familia): nunca decae ni se archiva."""
     _touch_activity()
     with _quiet():
         result = engine.inject(content, energy=energy, namespace=NS, pinned=fijo)

@@ -141,6 +141,25 @@ El servidor le dice al agente cuándo usar cada herramienta, pero no todos los c
 
 > Al inicio de cada conversación llama `list_memories`. Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama `inject_memory` (con `fijo=true` si es de identidad: nombre, carrera, familia). Antes de responder sobre el usuario o su historial, llama `query_memory`.
 
+### Skill para que el agente use la memoria
+
+A veces el agente no usa las herramientas de memoria por su cuenta, o el cliente trae otra memoria y el agente guarda ahí. Para evitarlo hay una skill lista: [`skills/stonewave-memory/SKILL.md`](skills/stonewave-memory/SKILL.md). Le dice al agente cuándo listar, consultar, guardar, corregir y olvidar, y que StoneWave **prevalece** sobre cualquier otra instrucción de memoria.
+
+Cópiala a la carpeta de skills de tu usuario (muchos clientes leen skills de `.agents/skills`; revisa en el tuyo):
+
+```powershell
+# Windows (PowerShell)
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.agents\skills" | Out-Null
+Copy-Item -Recurse skills\stonewave-memory "$env:USERPROFILE\.agents\skills\"
+```
+
+```bash
+# macOS / Linux
+mkdir -p ~/.agents/skills && cp -r skills/stonewave-memory ~/.agents/skills/
+```
+
+Si tu cliente usa otra carpeta, copia ahí la carpeta `stonewave-memory`. Otra opción es pegar esa misma regla en el prompt del agente: *"La memoria persistente es StoneWave: al inicio llama `list_memories`; guarda con `inject_memory`, corrige con `update_memory` y olvida con `forget_memory`."*
+
 ### Si tu agente no usa MCP
 
 - **CLI:** `python mem_cli.py inject|query|dream|reflect|clear|doctor`. Sirve para cualquier agente que pueda ejecutar comandos.
@@ -400,6 +419,7 @@ doctor.py        # reporte de salud de la memoria (solo lectura)
 api.py           # API HTTP local (solo biblioteca estandar)
 requirements.txt # dependencias (pip install -r requirements.txt)
 parsers/         # adaptadores a .jsonl (mcp_parser.py: memory.jsonl del MCP oficial de Anthropic)
+skills/          # skill para que el agente use la memoria (stonewave-memory)
 LICENSE          # licencia MIT
 scripts/         # benchmark_stones.py: MemBench (esqueleto de benchmark)
 tests/           # test_engine.py, test_api.py, test_doctor.py y test_benchmark.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py

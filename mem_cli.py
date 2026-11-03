@@ -31,9 +31,11 @@ def main():
     parser.add_argument("-e", "--energy", type=float, default=0.5, help="Energía inicial para la inyección (default: 0.5)")
 
     parser.add_argument("-f", "--fijo", action="store_true", help="Recuerdo fijo: no decae ni se archiva")
-    parser.add_argument("--from", dest="source_format", choices=["stonewave", "mcp-memory"], default="stonewave",
-                        help="Formato del archivo a importar: 'stonewave' (.jsonl canónico, default) o "
-                             "'mcp-memory' (memory.jsonl del MCP oficial de Anthropic)")
+    parser.add_argument("--from", dest="source_format", choices=["stonewave", "mcp-memory", "markdown"], default="stonewave",
+                        help="Formato del archivo a importar: 'stonewave' (.jsonl canónico, default), "
+                             "'mcp-memory' (memory.jsonl del MCP oficial de Anthropic) o 'markdown' (un .md o una carpeta de .md)")
+    parser.add_argument("--con-titulo", dest="with_heading", action="store_true",
+                        help="En import --from markdown: antepone el título de cada sección a sus recuerdos")
     parser.add_argument("--no-dream", action="store_true", help="En import: no correr el sueño al terminar")
 
     args = parser.parse_args()
@@ -91,6 +93,13 @@ def main():
                       f"({stats['duplicates']} repetidos y {stats['empty_entities']} entidades vacías omitidos)")
                 summary = engine.import_records(records, namespace=args.namespace, run_dream=not args.no_dream,
                                                 default_source="mcp-memory")
+            elif args.source_format == "markdown":
+                from parsers.markdown_parser import load_records
+                records, stats = load_records(args.text, namespace=ns, with_heading=args.with_heading)
+                print(f"Convertido Markdown: {len(records)} recuerdos de {stats['files']} archivo(s) "
+                      f"({stats['short']} muy cortos y {stats['duplicates']} repetidos omitidos)")
+                summary = engine.import_records(records, namespace=args.namespace, run_dream=not args.no_dream,
+                                                default_source="markdown")
             else:
                 summary = engine.import_memories(args.text, namespace=args.namespace, run_dream=not args.no_dream)
         except FileNotFoundError:

@@ -526,6 +526,92 @@ def test_respaldo_diario_rotativo_de_7_dias():
         assert c.execute("SELECT COUNT(*) FROM facts").fetchone()[0] == 1
 
 
+def _md_sample(folder):
+    F = "`" * 3
+    lines = ["---", "title: Notas", "---", "# Sobre mi", "",
+             "- Me llamo **Luis Eduardo** y vivo en [Guadalajara](https://ejemplo.com)",
+             "- [ ] Renovar el pasaporte antes de marzo",
+             "- [x] Pagar la renta", "  y el recibo de luz", "- corto", "",
+             "Trabajo en Neodata dando cursos", "de capacitación todos los días.", "",
+             "## Proyectos", "<!-- comentario", "de varias lineas -->", F + "python", 'codigo = "no va"', F,
+             "| a | b |", "|---|---|", "1. Atom-Fusion con `Cline`",
+             "2. Me llamo Luis Eduardo y vivo en Guadalajara", "", "---", "Texto despues de la regla horizontal larga"]
+    p = os.path.join(folder, "notas.md")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return p
+
+
+def test_parser_markdown_convierte_y_respeta_titulos():
+    from parsers.markdown_parser import load_records, convert
+    folder = tempfile.mkdtemp()
+    src = _md_sample(folder)
+    recs, stats = load_records(src, namespace="notas")
+    assert [r["content"] for r in recs] == [
+        "Me llamo Luis Eduardo y vivo en Guadalajara", "Renovar el pasaporte antes de marzo",
+        "Pagar la renta y el recibo de luz", "Trabajo en Neodata dando cursos de capacitación todos los días.",
+        "Atom-Fusion con Cline", "Texto despues de la regla horizontal larga"], [r["content"] for r in recs]
+    assert stats["short"] == 1 and stats["duplicates"] == 1 and stats["files"] == 1, stats
+    assert all(r["namespace"] == "notas" and r["source"] == "markdown" and not r["fijo"] for r in recs)
+    recs, _ = load_records(src, with_heading=True, pinned_headings=["SOBRE MI"])
+    assert recs[0]["content"] == "Sobre mi: Me llamo Luis Eduardo y vivo en Guadalajara" and recs[0]["fijo"]
+    assert recs[-1]["content"] == "Proyectos: Texto despues de la regla horizontal larga" and not recs[-1]["fijo"]
+    out = os.path.join(folder, "canonico.jsonl")
+    assert convert(src, out)["records"] == 6
+    s = make_engine().import_memories(out)
+    assert s["new"] == 6 and not s["invalid"], s
+
+
+def test_parser_markdown_carpeta_ignora_ocultas():
+    from parsers.markdown_parser import load_records
+    folder = tempfile.mkdtemp()
+    os.makedirs(os.path.join(folder, "sub"))
+    os.makedirs(os.path.join(folder, ".obsidian"))
+    for rel, text in (("a.md", "- Dato uno de la nota A"), ("sub/b.md", "Dato dos de la nota B"),
+                      (".obsidian/c.md", "Dato tres oculto aqui"), ("d.txt", "Dato cuatro no es md")):
+        with open(os.path.join(folder, rel), "w", encoding="utf-8") as f:
+            f.write(text)
+    recs, stats = load_records(folder)
+    assert stats["files"] == 2 and sorted(r["content"] for r in recs) == ["Dato dos de la nota B", "Dato uno de la nota A"], (recs, stats)
+    try:
+        load_records(os.path.join(folder, "nada"))
+        assert False, "debio fallar por carpeta inexistente"
+    except FileNotFoundError:
+        pass
+
+
+def test_cli_import_markdown():
+    import contextlib
+    import io
+    import mem_cli
+    db = os.path.join(tempfile.mkdtemp(), "cli_md.db")
+    old_engine, old_argv = mem_cli.StoneWaveEngine, sys.argv
+    mem_cli.StoneWaveEngine = lambda: make_engine(db)
+
+    def run(*args):
+        sys.argv = ["mem_cli.py", *args]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            try:
+                mem_cli.main()
+                code = 0
+            except SystemExit as ex:
+                code = ex.code or 0
+        return code, buf.getvalue()
+    try:
+        folder = tempfile.mkdtemp()
+        md = _md_sample(folder)
+        code, out = run("import", md, "--from", "markdown", "-n", "notas", "--no-dream")
+        assert code == 0 and "Convertido Markdown: 6 recuerdos" in out and "Nuevos: 6" in out, out
+        code, out = run("import", md, "--from", "markdown", "-n", "notas", "--no-dream")  # otra vez: refuerza, no duplica
+        assert code == 0 and "Reforzados: 6" in out, out
+        code, out = run("import", os.path.join(folder, "no_existe.md"), "--from", "markdown")
+        assert code == 1 and "No se encontró" in out, out
+    finally:
+        mem_cli.StoneWaveEngine, sys.argv = old_engine, old_argv
+    assert len(rows(db, "SELECT * FROM facts WHERE namespace='notas'")) == 6
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

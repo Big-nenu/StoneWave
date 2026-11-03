@@ -31,11 +31,14 @@ def main():
     parser.add_argument("-e", "--energy", type=float, default=0.5, help="Energía inicial para la inyección (default: 0.5)")
 
     parser.add_argument("-f", "--fijo", action="store_true", help="Recuerdo fijo: no decae ni se archiva")
-    parser.add_argument("--from", dest="source_format", choices=["stonewave", "mcp-memory", "markdown"], default="stonewave",
+    parser.add_argument("--from", dest="source_format", choices=["stonewave", "mcp-memory", "markdown", "chatgpt", "claude"], default="stonewave",
                         help="Formato del archivo a importar: 'stonewave' (.jsonl canónico, default), "
-                             "'mcp-memory' (memory.jsonl del MCP oficial de Anthropic) o 'markdown' (un .md o una carpeta de .md)")
+                             "'mcp-memory' (memory.jsonl del MCP oficial de Anthropic) o 'markdown' (un .md o una carpeta de .md), "
+                             "'chatgpt' o 'claude' (conversations.json o el .zip de la exportacion; el formato se detecta solo)")
     parser.add_argument("--con-titulo", dest="with_heading", action="store_true",
-                        help="En import --from markdown: antepone el título de cada sección a sus recuerdos")
+                        help="En import --from markdown/chatgpt/claude: antepone el título de la sección o conversación a sus recuerdos")
+    parser.add_argument("--min-chars", type=int, default=40, help="En import --from chatgpt/claude: largo minimo de un mensaje (default: 40)")
+    parser.add_argument("--max-chars", type=int, default=600, help="En import --from chatgpt/claude: largo maximo de un mensaje (default: 600)")
     parser.add_argument("--no-dream", action="store_true", help="En import: no correr el sueño al terminar")
 
     args = parser.parse_args()
@@ -100,10 +103,21 @@ def main():
                       f"({stats['short']} muy cortos y {stats['duplicates']} repetidos omitidos)")
                 summary = engine.import_records(records, namespace=args.namespace, run_dream=not args.no_dream,
                                                 default_source="markdown")
+            elif args.source_format in ("chatgpt", "claude"):
+                from parsers.chat_parser import load_records
+                records, stats = load_records(args.text, namespace=ns, with_title=args.with_heading,
+                                              min_chars=args.min_chars, max_chars=args.max_chars)
+                print(f"Convertido chats: {len(records)} recuerdos de {stats['conversations']} conversaciones "
+                      f"({stats['short']} cortos, {stats['long']} largos y {stats['duplicates']} repetidos omitidos)")
+                summary = engine.import_records(records, namespace=args.namespace, run_dream=not args.no_dream,
+                                                default_source=args.source_format)
             else:
                 summary = engine.import_memories(args.text, namespace=args.namespace, run_dream=not args.no_dream)
         except FileNotFoundError:
             print(f"No se encontró el archivo: {args.text}")
+            sys.exit(1)
+        except ValueError as ex:
+            print(f"No se pudo leer {args.text}: {ex}")
             sys.exit(1)
         _print_import_summary(summary)
         if summary["aborted"]:

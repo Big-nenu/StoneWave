@@ -612,6 +612,99 @@ def test_cli_import_markdown():
     assert len(rows(db, "SELECT * FROM facts WHERE namespace='notas'")) == 6
 
 
+def _chats_sample(folder):
+    def msg(role, parts, ts=None, **meta):
+        return {"message": {"author": {"role": role}, "create_time": ts, "metadata": meta, "content": {"parts": parts}}}
+    gpt = {"title": "Plan de viaje", "create_time": 1760000000, "mapping": {
+        "n0": {"message": None},
+        "n1": msg("system", ["Eres un asistente util y amable con todos los usuarios"], 1760000001),
+        "n2": msg("user", ["Quiero aprender a tocar la guitarra eléctrica este año sin gastar mucho"], 1760000000),
+        "n3": msg("assistant", ["Claro, empecemos con lo basico de la guitarra"], 1760000050),
+        "n4": msg("user", ["gracias"], 1760000100),
+        "n5": msg("user", ["Responde siempre en español con mucho detalle y ejemplos largos"], 1760000150, is_user_system_message=True),
+        "n6": msg("user", [{"content_type": "image_asset_pointer"}, "Mi hermana estudia medicina y vive en otra ciudad con su pareja"], 1760000200),
+        "n7": msg("user", ["quiero aprender a tocar la guitarra eléctrica este año sin gastar  mucho"], 1760000300),
+        "n8": msg("user", [" ".join(["palabra"] * 200)], 1760000400),
+    }}
+    claude = {"name": "Notas", "created_at": "2026-01-05T09:00:00Z", "chat_messages": [
+        {"sender": "human", "text": "Trabajo en una constructora en Guadalajara desde hace tres años", "created_at": "2026-01-05T10:00:00Z"},
+        {"sender": "assistant", "text": "Entendido, gracias por contarme eso de tu trabajo"},
+        {"sender": "human", "text": "", "content": [{"type": "text", "text": "Me gusta el ciclismo de montaña los fines de semana en el bosque"}], "created_at": "2026-01-06T10:00:00Z"},
+        {"sender": "human", "text": "ok", "created_at": "2026-01-06T11:00:00Z"},
+    ]}
+    path = os.path.join(folder, "conversations.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump([gpt, claude, {"algo": "raro"}], f)
+    return path
+
+
+def test_parser_chats_chatgpt_y_claude():
+    import zipfile
+    from parsers import chat_parser as chat
+    folder = tempfile.mkdtemp()
+    src = _chats_sample(folder)
+    recs, stats = chat.load_records(src, namespace="chats")
+    assert [r["content"] for r in recs] == [
+        "Quiero aprender a tocar la guitarra eléctrica este año sin gastar mucho",
+        "Mi hermana estudia medicina y vive en otra ciudad con su pareja",
+        "Trabajo en una constructora en Guadalajara desde hace tres años",
+        "Me gusta el ciclismo de montaña los fines de semana en el bosque"], recs
+    assert [r["source"] for r in recs] == ["chatgpt", "chatgpt", "claude", "claude"]
+    assert all(r["namespace"] == "chats" and r["fijo"] is False for r in recs)
+    assert recs[0]["created_at"] == chat._iso(1760000000) and recs[0]["created_at"].endswith("Z")
+    assert recs[2]["created_at"] == "2026-01-05T10:00:00Z"
+    assert stats == {"conversations": 2, "messages": 8, "short": 2, "long": 1, "duplicates": 1, "unknown": 1}, stats
+    titled, _ = chat.load_records(src, with_title=True)
+    assert titled[0]["content"].startswith("Plan de viaje: Quiero") and titled[2]["content"].startswith("Notas: Trabajo")
+    assert len(chat.load_records(src, max_chars=5000)[0]) == 5  # el mensaje largo entra si se sube el limite
+    z = os.path.join(folder, "export.zip")
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.write(src, "export/conversations.json")
+    assert [r["content"] for r in chat.load_records(z)[0]] == [r["content"] for r in recs]
+    out = os.path.join(folder, "salida.jsonl")
+    assert chat.convert(src, out)["records"] == 4
+    with open(out, encoding="utf-8") as f:
+        assert len(f.readlines()) == 4
+
+
+def test_cli_import_chatgpt():
+    import contextlib
+    import io
+    import mem_cli
+    db = os.path.join(tempfile.mkdtemp(), "cli_chat.db")
+    old_engine, old_argv = mem_cli.StoneWaveEngine, sys.argv
+    mem_cli.StoneWaveEngine = lambda: make_engine(db)
+
+    def run(*args):
+        sys.argv = ["mem_cli.py", *args]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            try:
+                mem_cli.main()
+                code = 0
+            except SystemExit as ex:
+                code = ex.code or 0
+        return code, buf.getvalue()
+    try:
+        folder = tempfile.mkdtemp()
+        src = _chats_sample(folder)
+        code, out = run("import", src, "--from", "chatgpt", "-n", "chats", "--no-dream")
+        assert code == 0 and "Convertido chats: 4 recuerdos" in out and "Nuevos: 4" in out, out
+        code, out = run("import", src, "--from", "claude", "-n", "chats", "--no-dream")  # otra vez: refuerza, no duplica
+        assert code == 0 and "Reforzados: 4" in out, out
+        assert rows(db, "SELECT DISTINCT source FROM facts ORDER BY source") == [("chatgpt",), ("claude",)]
+        bad = os.path.join(folder, "malo.json")
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write("esto no es json")
+        code, out = run("import", bad, "--from", "chatgpt")
+        assert code == 1 and "No se pudo leer" in out, out
+        code, out = run("import", os.path.join(folder, "no_existe.json"), "--from", "chatgpt")
+        assert code == 1 and "No se encontró" in out, out
+    finally:
+        mem_cli.StoneWaveEngine, sys.argv = old_engine, old_argv
+
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

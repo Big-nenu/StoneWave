@@ -316,7 +316,7 @@ python mem_cli.py import memory.jsonl --from mcp-memory -n default      # convie
 python parsers/mcp_parser.py memory.jsonl salida.jsonl --fijo Luis      # o solo convierte (revísalo antes de importar)
 ```
 
-Cada observación se vuelve un recuerdo (`Luis: Works at Neodata`) y cada relación otro (`Luis works at Neodata`). Con `--fijo NOMBRE` (se puede repetir) los recuerdos de esa entidad entran como fijos. Para otras fuentes (Claude, ChatGPT, notas en Markdown) basta con generar el `.jsonl` con los campos de arriba.
+Cada observación se vuelve un recuerdo (`Luis: Works at Neodata`) y cada relación otro (`Luis works at Neodata`). Con `--fijo NOMBRE` (se puede repetir) los recuerdos de esa entidad entran como fijos. Para otras fuentes basta con generar el `.jsonl` con los campos de arriba (ya hay adaptadores para notas en Markdown y para ChatGPT/Claude).
 
 ## Probar
 
@@ -467,7 +467,7 @@ mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor, import, ex
 doctor.py        # reporte de salud de la memoria (solo lectura)
 api.py           # API HTTP local (solo biblioteca estandar)
 requirements.txt # dependencias (pip install -r requirements.txt)
-parsers/         # adaptadores a .jsonl (mcp_parser.py: memory.jsonl del MCP oficial de Anthropic)
+parsers/         # adaptadores a .jsonl (mcp_parser.py: MCP oficial de Anthropic; markdown_parser.py: notas .md; chat_parser.py: ChatGPT/Claude)
 skills/          # skill para que el agente use la memoria (stonewave-memory)
 .github/workflows/test.yml  # CI: corre tests/test_engine.py en cada push/PR a main
 LICENSE          # licencia MIT
@@ -507,7 +507,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Respaldo automático diario rotativo (7 días en `~/.stonewave/backups/`) | Hecho |
 | GitHub Action que corre `tests/test_engine.py` en cada push/PR a `main` | Hecho |
 | Adaptador de notas Markdown: `python mem_cli.py import notas.md --from markdown [--con-titulo] [-n NAMESPACE]` (acepta un `.md` o una carpeta; cada viñeta o párrafo es un recuerdo; omite front matter, código, tablas y comentarios; `--con-titulo` antepone el título de la sección; también se puede convertir aparte con `python parsers/markdown_parser.py notas.md salida.jsonl [--fijo-titulo "Sobre mi"]`) | Hecho (`parsers/markdown_parser.py`) |
-| Adaptadores para otras fuentes (Claude, ChatGPT) | Idea |
+| Adaptador de ChatGPT y Claude: `python mem_cli.py import export.zip --from chatgpt [--con-titulo] [--min-chars 40] [--max-chars 600] [-n NAMESPACE]` (acepta `conversations.json` o el `.zip` de la exportación; solo toma TUS mensajes, omite los cortos, los muy largos y los repetidos; el formato se detecta solo, `--from claude` hace lo mismo; también se puede convertir aparte con `python parsers/chat_parser.py conversations.json salida.jsonl`) | Hecho (`parsers/chat_parser.py`) |
 | Grafo de entidades: se quitó (`generate_graph`, `graph_engine.py`); falta definir cómo quieres verlo | Pendiente |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |
 | Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |

@@ -418,12 +418,40 @@ Formato de un caso (una línea JSON por caso en el `.jsonl`):
 {"id": "multi_01", "category": "multi",
  "facts": ["texto", {"text": "otro texto", "pinned": false, "age_days": 200}],
  "question": "¿...?", "expected": ["fragmento1", "fragmento2"],
- "forbidden": ["no debe salir"], "dream": true, "requires_llm": false, "background": true}
+ "forbidden": ["no debe salir"], "dream": true, "requires_llm": false, "background": true, "expect_empty": false}
 ```
 
-`expected` son fragmentos que deben aparecer (sin importar mayúsculas ni acentos), `forbidden` los que no deben salir (por ejemplo un dato ya contradicho) y `requires_llm` marca los casos que necesitan los modelos reales (se omiten con `--fake`). Un caso pasa si aparecen todos los `expected` y ningún `forbidden`.
+`expected` son fragmentos que deben aparecer (sin importar mayúsculas ni acentos), `forbidden` los que no deben salir (por ejemplo un dato ya contradicho), `requires_llm` marca los casos que necesitan los modelos reales (se omiten con `--fake`) y `expect_empty` marca preguntas sin respuesta (pasan solo si no se devuelve nada). Un caso pasa si aparecen todos los `expected` y ningún `forbidden`.
 
-**Estado:** es un esqueleto con 4 casos de ejemplo (un hecho, varios hechos, contradicción y sótano). Con Ollama real: 1 piedra acierta 3/4 (falla la pregunta de varios hechos) y 5 piedras 4/4, pero la muestra es muy chica; falta el dataset grande.
+**Dataset grande:** `tests/membench_cases.jsonl` tiene **50 casos** (14 de un hecho, 14 de varios hechos, 10 contradicciones, 8 de sótano y 4 preguntas sin respuesta). Los casos con `"expect_empty": true` pasan solo si el `query` no devuelve nada (mide que no invente). Córrelo con:
+
+```bash
+python scripts/benchmark_stones.py --cases tests/membench_cases.jsonl --no-topics
+```
+
+`--no-topics` salta la clasificación por tema en el sueño (no afecta a la consulta) y deja la corrida en ~1 minuto con Ollama real (100 corridas: 50 casos × 1 y 5 piedras).
+
+**Primer resultado (Ollama real, 8 recuerdos de relleno por caso):**
+
+| Categoría | 1 piedra | 5 piedras |
+|---|---|---|
+| Un hecho (14) | 14/14 | 14/14 |
+| Varios hechos (14) | 12/14 | 12/14 |
+| Contradicciones (10) | 7/10 | 7/10 |
+| Sótano (8) | 6/8 | 6/8 |
+| Sin respuesta (4) | 3/4 | 3/4 |
+| **Total (50)** | **42/50 (84 %)** | **42/50 (84 %)** |
+| Tiempo medio por consulta | 38 ms | 76 ms |
+
+Lo que muestran los fallos (los mismos con 1 y 5 piedras):
+
+- **Las 5 piedras no ayudaron en este dataset:** igual acierto, el doble de tiempo (solo mejoraron la cobertura en un caso de varios hechos). Con corpus de ~13 recuerdos no hay margen; falta probar con memorias más grandes antes de decidir.
+- **Contradicciones (3 fallos):** dos casos (`contradiccion_03`, `_04`) no se detectan porque la similitud entre los dos recuerdos (0.32) queda bajo `CONFLICT_SIM` (0.40) y el sueño ni se los muestra al modelo, que sí los marcaría como contradictorios. El tercero (`_05`) llega justo al umbral pero `tev` se contradice según el orden en que ve las frases, y se exige que coincida en ambos. Candidato a ajuste: bajar `CONFLICT_SIM` hacia 0.30.
+- **Sótano (2 fallos):** si hay un recuerdo activo parecido (ej. "mi jefa **actual**" vs. "mi **antigua** jefa") la coincidencia de la biblioteca es fuerte, no se busca en el sótano y el recuerdo archivado no sale.
+- **Sin respuesta (1 fallo):** una pregunta cercana ("¿cómo se llama mi dentista?" con otros doctores guardados) devuelve el recuerdo parecido en vez de nada.
+- **Varios hechos (2 fallos):** un recuerdo esperado queda fuera del top-3 (`multi_07`, `multi_08`).
+
+**Estado:** con 4 casos de ejemplo (`--cases` omitido) o con el dataset de 50. Los umbrales aún se calibraron con pocos recuerdos; falta repetir con una memoria real grande.
 
 ## Errores comunes
 
@@ -470,9 +498,10 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Doctor solucionador: si hay un fallo grave imprime las soluciones sugeridas (comandos exactos) | Hecho |
 | Limpieza del repo: prototipos y scripts viejos movidos a `archive/v0.1/` | Hecho |
 | Probar con una memoria real grande (cientos de recuerdos) y reajustar umbrales si hace falta | Pendiente |
-| Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Pendiente |
+| Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Parcial: con el dataset de 50 casos y ~13 recuerdos no hay diferencia (84 % vs 84 %); falta probar con una memoria grande |
 | Esqueleto de MemBench (`scripts/benchmark_stones.py`: inyecta → dream → query → compara con lo esperado) | Hecho (el viejo `tests/benchmark_runner.py` mide fusión y quedó obsoleto) |
-| Dataset grande de MemBench (unos 50 casos: varios hechos, contradicciones, sótano) | Pendiente |
+| Dataset grande de MemBench (50 casos: un hecho, varios hechos, contradicciones, sótano, sin respuesta) | Hecho (`tests/membench_cases.jsonl`) |
+| Ajustar `CONFLICT_SIM` (0.40 → ~0.30) y revisar el sótano cuando hay un recuerdo activo parecido, según los fallos de MemBench | Pendiente |
 | API HTTP local para agentes sin MCP (`api.py`: `/inject`, `/query`, `/dream`) | Hecho |
 | Borrar y corregir recuerdos (`forget_memory`, `update_memory`) | Hecho |
 | Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |

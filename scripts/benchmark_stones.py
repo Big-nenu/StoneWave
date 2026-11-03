@@ -14,16 +14,19 @@ Uso:
     python scripts/benchmark_stones.py --fake               # sin Ollama: solo valida que el benchmark corre
     python scripts/benchmark_stones.py --json salida.json   # guarda los resultados
     python scripts/benchmark_stones.py --min-pass 0.8       # codigo de salida 1 si pasa menos del 80 %
+    python scripts/benchmark_stones.py --cases tests/membench_cases.jsonl --no-topics   # dataset grande (50 casos)
 
 Formato de un caso (JSON, una linea por caso en el .jsonl):
     {"id": "multi_01", "category": "multi",
      "facts": ["texto", {"text": "otro texto", "pinned": false, "age_days": 200}],
      "question": "...?", "expected": ["fragmento1", "fragmento2"],
-     "forbidden": ["no debe salir"], "dream": true, "requires_llm": false, "background": true}
+     "forbidden": ["no debe salir"], "dream": true, "requires_llm": false, "background": true,
+     "expect_empty": false}
 
   expected   : fragmentos que DEBEN aparecer en los resultados (sin importar mayusculas ni acentos).
   forbidden  : fragmentos que NO deben aparecer (por ejemplo un dato ya contradicho).
   requires_llm: el caso necesita los modelos reales (contradicciones); se omite con --fake.
+  expect_empty: la pregunta no tiene respuesta en la memoria; el caso pasa solo si el query no devuelve nada.
   Un caso pasa si aparecen todos los "expected" y ninguno de los "forbidden" en el top-3.
 """
 import argparse
@@ -107,13 +110,14 @@ FAKE_THRESHOLDS = {"CENTER_PRIOR": 10 ** 9, "WEAK_MATCH": 0.65, "MIN_SIM": 0.5, 
                    "DUPLICATE_SIM": 0.95, "CONFLICT_SIM": 0.8, "RELATED_SIM": 0.6}
 
 
-def _make_engine(db_path, fake):
+def _make_engine(db_path, fake, no_topics=False):
     e = me.StoneWaveEngine(db_path=db_path)
     if fake:
         e.get_embedding = _fake_embedding
         e.get_embeddings = lambda texts: [_fake_embedding(t) for t in texts]
-        e.classify_topics = lambda t: ["otro"]
         e._ask_llm_conflict = lambda a, b: "COMPLEMENTARIO"
+    if fake or no_topics:  # los temas no influyen en la consulta: saltarlos ahorra ~1.5 s por recuerdo en cada sueño
+        e.classify_topics = lambda t: ["otro"]
     return e
 
 
@@ -125,7 +129,7 @@ def _norm_fact(f):
         {"text": f["text"], "pinned": bool(f.get("pinned", False)), "age_days": float(f.get("age_days", 0))}
 
 
-def run_case(case, stones=5, fake=False, top_k=3):
+def run_case(case, stones=5, fake=False, top_k=3, no_topics=False):
     """Inyecta -> dream -> query -> compara. Devuelve un dict con el resultado (nunca lanza excepciones)."""
     base = {"id": case["id"], "category": case.get("category", "general"), "stones": stones,
             "question": case["question"], "expected": case["expected"]}
@@ -136,7 +140,7 @@ def run_case(case, stones=5, fake=False, top_k=3):
     old_stones = me.STONES
     try:
         me.STONES = stones
-        engine = _make_engine(os.path.join(folder, "bench.db"), fake)
+        engine = _make_engine(os.path.join(folder, "bench.db"), fake, no_topics)
         facts = [_norm_fact(f) for f in case["facts"]]
         if case.get("background", True):
             for text in BACKGROUND:
@@ -161,6 +165,9 @@ def run_case(case, stones=5, fake=False, top_k=3):
             returned = [r[3] for r in res[:top_k]]
             top = [(round(float(r[0]), 3), r[3]) for r in res[:top_k]]
         verdict = evaluate(case["expected"], case.get("forbidden"), returned)
+        if case.get("expect_empty"):  # pregunta sin respuesta: lo correcto es NO devolver nada (no inventar)
+            verdict = {"passed": not returned, "coverage": 0.0 if returned else 1.0, "hits": [], "missed": [],
+                       "forbidden_found": [returned[0][:60]] if returned else []}
         return {**base, "skipped": False, **verdict, "top": top, "ms": ms,
                 "note": res if isinstance(res, str) else ""}
     except Exception as ex:
@@ -173,8 +180,8 @@ def run_case(case, stones=5, fake=False, top_k=3):
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def run_benchmark(cases, stones_list=(1, 5), fake=False):
-    return [run_case(c, stones=s, fake=fake) for s in stones_list for c in cases]
+def run_benchmark(cases, stones_list=(1, 5), fake=False, no_topics=False):
+    return [run_case(c, stones=s, fake=fake, no_topics=no_topics) for s in stones_list for c in cases]
 
 
 # ----------------------------------------------------------------------
@@ -241,6 +248,7 @@ def main():
     ap.add_argument("--cases", help="archivo .jsonl con casos (default: los casos de ejemplo)")
     ap.add_argument("--fake", action="store_true", help="sin Ollama: embeddings falsos, solo valida que el benchmark corre")
     ap.add_argument("--no-background", action="store_true", help="no agregar recuerdos de relleno")
+    ap.add_argument("--no-topics", action="store_true", help="no clasificar temas en el sueño (no afecta a la consulta; hace la corrida mucho mas rapida)")
     ap.add_argument("--json", help="guarda los resultados en este archivo")
     ap.add_argument("--min-pass", type=float, default=0.0, help="si la tasa de acierto (0 a 1) con el mayor numero de piedras es menor, sale con codigo 1")
     args = ap.parse_args()
@@ -265,7 +273,7 @@ def main():
             return 2
     print(f"{len(cases)} caso(s) x piedras {stones_list} | corpus: {'sin relleno' if args.no_background else f'{len(BACKGROUND)} recuerdos de relleno'}")
     try:
-        results = run_benchmark(cases, stones_list, fake=args.fake)
+        results = run_benchmark(cases, stones_list, fake=args.fake, no_topics=args.no_topics)
     finally:
         for k, v in saved.items():
             setattr(me, k, v)

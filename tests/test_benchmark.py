@@ -82,6 +82,41 @@ def test_casos_que_requieren_llm_se_omiten_en_fake():
     assert r["skipped"] and r["passed"] is None
 
 
+def test_expect_empty_pasa_solo_si_no_devuelve_nada():
+    with fake_thresholds():
+        hay = {"id": "e1", "background": False, "facts": ["Los gatos duermen mucho durante el día"],
+               "question": "gatos duermen mucho durante día", "expected": [], "expect_empty": True}
+        r = bench.run_case(hay, fake=True)
+        assert not r["passed"] and r["coverage"] == 0.0 and r["forbidden_found"], r  # devolvio algo: falla
+        vacio = {"id": "e2", "background": False, "facts": ["Los gatos duermen mucho durante el día"],
+                 "question": "astronomía de agujeros negros", "expected": [], "expect_empty": True}
+        r = bench.run_case(vacio, fake=True)
+        assert r["passed"] and r["coverage"] == 1.0, r
+
+
+def test_dataset_grande_es_valido():
+    path = os.path.join(ROOT, "tests", "membench_cases.jsonl")
+    cases = bench.load_cases(path)
+    ids = [c["id"] for c in cases]
+    assert len(cases) == 50 and len(set(ids)) == 50, (len(cases), len(set(ids)))
+    cats = {}
+    for c in cases:
+        cats[c["category"]] = cats.get(c["category"], 0) + 1
+        assert isinstance(c["facts"], list) and c["facts"] and c["question"].strip(), c["id"]
+        if c.get("expect_empty"):
+            assert c["expected"] == [], c["id"]
+        else:
+            assert c["expected"], c["id"]
+        if c["category"] == "contradiction":
+            assert c.get("requires_llm") and c.get("forbidden"), c["id"]
+        if c["category"] == "basement":
+            assert any(isinstance(f, dict) and f.get("age_days") for f in c["facts"]), c["id"]
+    assert cats == {"single": 14, "multi": 14, "contradiction": 10, "basement": 8, "no_answer": 4}, cats
+    with fake_thresholds():  # corre de punta a punta sin romperse (con embeddings falsos el acierto no importa)
+        rs = [bench.run_case(c, fake=True) for c in cases[:6]]
+    assert all("error" not in r for r in rs), rs
+
+
 def test_main_fake_de_punta_a_punta():
     old_argv = sys.argv
     buf = io.StringIO()

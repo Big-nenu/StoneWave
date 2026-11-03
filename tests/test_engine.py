@@ -477,6 +477,55 @@ def test_restaurar_desde_la_papelera():
     assert r["status"] == "restored" and r["current"] == new, r
 
 
+def test_contradiccion_gana_el_mas_nuevo_por_created_at_no_por_id():
+    e = make_engine(verdict="CONTRADICTORIO")
+    viejo_id_alto = "mi perro pequeño juega en el jardín todas las tardes"
+    nuevo_id_bajo = "mi perro pequeño juega en el jardín todas las mañanas"
+    e.inject(nuevo_id_bajo)   # ID 1
+    e.inject(viejo_id_alto)   # ID 2
+    ids = _ids(e)
+    now = time.time()
+    with sqlite3.connect(e.db_path) as c:  # el de ID 1 es MAS NUEVO por fecha; el de ID 2 es mas viejo
+        c.execute("UPDATE facts SET created_at=? WHERE id=?", (now, ids[nuevo_id_bajo]))
+        c.execute("UPDATE facts SET created_at=? WHERE id=?", (now - 10 * 86400, ids[viejo_id_alto]))
+        c.commit()
+    e.dream()
+    assert [r[0] for r in rows(e.db_path, "SELECT content FROM facts")] == [nuevo_id_bajo]
+    assert [r[0] for r in rows(e.db_path, "SELECT content FROM archived_facts")] == [viejo_id_alto]
+    # empate de fecha: gana el de ID mayor (el que se guardo despues)
+    e2 = make_engine(verdict="CONTRADICTORIO")
+    e2.inject(nuevo_id_bajo)
+    e2.inject(viejo_id_alto)
+    with sqlite3.connect(e2.db_path) as c:
+        c.execute("UPDATE facts SET created_at=1000")
+        c.commit()
+    e2.dream()
+    assert [r[0] for r in rows(e2.db_path, "SELECT content FROM facts")] == [viejo_id_alto]
+
+
+def test_respaldo_diario_rotativo_de_7_dias():
+    from datetime import date, timedelta
+    e = make_engine()
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    folder = os.path.join(os.path.dirname(e.db_path), "backups")
+    ajeno = os.path.join(folder, "otra-2020-01-01.db")  # de otra BD: no se debe tocar
+    os.makedirs(folder, exist_ok=True)
+    for name in (ajeno, os.path.join(folder, "notas.txt")):
+        open(name, "w").close()
+    start = date(2026, 10, 20)
+    for n in range(14):  # 14 dias seguidos: Oct 20 .. Nov 2
+        msg = e.backup(today=start + timedelta(days=n))
+        assert msg and msg.startswith("Respaldo creado"), msg
+    mine = sorted(f for f in os.listdir(folder) if f.startswith("t-"))
+    assert mine == [f"t-2026-10-{d}.db" for d in (27, 28, 29, 30, 31)] + ["t-2026-11-01.db", "t-2026-11-02.db"], mine
+    assert os.path.exists(ajeno) and os.path.exists(os.path.join(folder, "notas.txt"))
+    assert not [f for f in os.listdir(folder) if f.endswith(".tmp")]
+    assert e.backup(today=date(2026, 11, 2)) is None  # ya hay uno de hoy: no repite
+    assert e.backup(keep_days=0) is None  # apagado
+    with sqlite3.connect(os.path.join(folder, "t-2026-11-02.db")) as c:  # la copia es una BD valida con los recuerdos
+        assert c.execute("SELECT COUNT(*) FROM facts").fetchone()[0] == 1
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

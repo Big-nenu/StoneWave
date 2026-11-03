@@ -78,6 +78,8 @@ CONFLICT_SIM = 0.40  # arriba de esto, el sueño revisa si se contradicen (contr
 RELATED_SIM = 0.30  # arriba de esto, el sueño enlaza los recuerdos (sin relacion: negativo)
 DREAM_MAX_CHECKS = 30  # revisiones de contradiccion con LLM por sueño
 DREAM_EVERY_HOURS = float(env_var("DREAM_HOURS", "12"))  # cada cuantas horas conviene soñar
+BACKUP_KEEP_DAYS = int(env_var("BACKUP_DAYS", "7"))  # dias de respaldos diarios que se conservan (0 = sin respaldos)
+BACKUP_NAME = re.compile(r"^(?P<stem>.+)-(?P<day>\d{4}-\d{2}-\d{2})\.db$")
 ANGLE_WEIGHT = 0.5     # peso de las piedras-angulo frente a la pregunta completa
 
 STOPWORDS = {
@@ -112,6 +114,56 @@ class StoneWaveEngine:
             self._vconn.close()
         except Exception:
             pass
+
+    def backup(self, keep_days=None, today=None):
+        """Respaldo diario de la base de datos en <carpeta de la BD>/backups/<nombre>-AAAA-MM-DD.db.
+
+        Hace como maximo uno por dia (si ya existe el de hoy no hace nada) y usa la API de respaldo de SQLite,
+        asi que la copia es consistente aunque otro proceso este escribiendo. Despues borra los respaldos con mas de
+        'keep_days' dias (se conservan hoy y los 'keep_days - 1' dias anteriores). Solo toca archivos con el patron
+        <nombre>-AAAA-MM-DD.db de esta misma BD. 'today' (datetime.date) existe para las pruebas.
+        Devuelve un texto con lo que hizo, o None si no hubo nada que hacer (apagado, BD inexistente o ya respaldada hoy).
+        """
+        keep_days = BACKUP_KEEP_DAYS if keep_days is None else keep_days
+        src_path = Path(self.db_path)
+        if keep_days <= 0 or not src_path.exists():
+            return None
+        today = today or datetime.now().date()
+        folder = src_path.parent / "backups"
+        folder.mkdir(parents=True, exist_ok=True)
+        final = folder / f"{src_path.stem}-{today.isoformat()}.db"
+        msg = None
+        if not final.exists():
+            tmp = folder / (final.name + ".tmp")
+            try:
+                with closing(sqlite3.connect(self.db_path)) as src, closing(sqlite3.connect(str(tmp))) as dst:
+                    src.backup(dst)
+                os.replace(tmp, final)
+                msg = f"Respaldo creado: {final}"
+            except Exception as ex:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+                return f"No se pudo crear el respaldo: {ex}"
+        removed = 0
+        for f in folder.iterdir():
+            m = BACKUP_NAME.match(f.name)
+            if not m or m.group("stem") != src_path.stem:
+                continue
+            try:
+                day = datetime.strptime(m.group("day"), "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if (today - day).days >= keep_days:
+                try:
+                    f.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        if removed:
+            msg = (msg + ". " if msg else "") + f"Respaldos viejos borrados: {removed}"
+        return msg
 
     def _ensure_embedding_scheme(self):
         """Si los vectores guardados se hicieron con otro modelo o prefijos, los recalcula (con respaldo)."""
@@ -1039,8 +1091,9 @@ class StoneWaveEngine:
         if len(ids) < 2:
             return 0, 0, 0
         with closing(sqlite3.connect(self.db_path)) as conn:
-            meta = {r[0]: (r[1], r[2]) for r in conn.execute(
-                "SELECT id, content, COALESCE(pinned,0) FROM facts WHERE namespace=?", (namespace,))}
+            # (contenido, fijo, fecha de creacion): la fecha decide quien gana en una contradiccion
+            meta = {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
+                "SELECT id, content, COALESCE(pinned,0), COALESCE(created_at, last_used, 0) FROM facts WHERE namespace=?", (namespace,))}
             known = {(r[0], r[1]): r[2] for r in conn.execute("SELECT fact_a, fact_b, kind FROM links")}
         pairs = []
         for i, j, s in self._similar_pairs(mat, RELATED_SIM):
@@ -1065,7 +1118,9 @@ class StoneWaveEngine:
                     # un modelo chico se equivoca: solo cuenta como contradiccion si lo dice en los dos ordenes
                     kind = "contradice" if ("CONTRADICTORIO" in v1 and "CONTRADICTORIO" in v2) else "similar"
             if kind == "contradice" and not meta[a][1] and not meta[b][1]:
-                archive.add(a)  # gana el mas nuevo; el viejo no se borra, baja al sotano
+                # gana el mas nuevo segun created_at (si empatan, el de ID mayor); el viejo no se borra, baja al sotano
+                older = a if (meta[a][2], a) <= (meta[b][2], b) else b
+                archive.add(older)
                 contradictions += 1
                 continue
             if kind == "relacionado":

@@ -45,7 +45,7 @@ Cada recuerdo es un texto con su vector (embedding), una energía y, opcionalmen
 - **Guardar (`inject_memory`):** es rápido y no usa modelos de lenguaje. Si ya existe un recuerdo casi idéntico (similitud ≥ 0.90) solo le sube la energía. Si no, guarda uno nuevo. **Nunca reescribe ni fusiona recuerdos.** Con `fijo=true` el recuerdo es de identidad: no decae y nunca se archiva.
 - **Consultar (`query_memory`):** lanza las **5 piedras** (la pregunta y hasta 4 ángulos sacados de ella) en una sola llamada de embeddings. Cada piedra trae su onda de recuerdos parecidos. Primera ronda: las crestas se suman y los valles se descartan. Los recuerdos enlazados por el sueño se agregan a los candidatos. Segunda ronda: los 3 mejores se vuelven las nuevas piedras y gana quien más se parece a ellos. Devuelve hasta 3 resultados.
 - **Sótano:** si la mejor coincidencia de la biblioteca es débil, las piedras también bajan al sótano y el Bibliotecario **resucita** el recuerdo.
-- **Sueño (`force_dream`):** (1) baja al sótano lo que lleva tiempo sin usarse, (2) clasifica por tema los recuerdos nuevos, (3) enlaza los recuerdos parecidos sin modificarlos y (4) si dos recuerdos se contradicen, el más viejo baja al sótano (el modelo tiene que decirlo en los dos órdenes para que cuente). Lo que baja por contradicción nunca se resucita solo.
+- **Sueño (`force_dream`):** (1) baja al sótano lo que lleva tiempo sin usarse, (2) clasifica por tema los recuerdos nuevos, (3) enlaza los recuerdos parecidos sin modificarlos y (4) si dos recuerdos se contradicen, el más viejo baja al sótano (el modelo tiene que decirlo en los dos órdenes para que cuente). **"Más viejo" se decide por la fecha `created_at` de cada recuerdo, no por su ID**; si tienen exactamente la misma fecha, gana el guardado después (ID mayor) y los recuerdos fijos nunca se archivan por contradicción. Lo que baja por contradicción nunca se resucita solo.
 - **Reflexión:** `trigger_reflection` genera una intuición a partir de los recuerdos con más energía y la guarda como recuerdo nuevo.
 
 ### Sueño automático
@@ -56,6 +56,17 @@ No hace falta que el agente llame a `force_dream`. El servidor revisa cada 5 min
 2. llevas 10 minutos sin usar la memoria (o, si nunca hay un rato libre, ya pasaron 36 horas).
 
 Así la memoria se ordena sola mientras no usas la IA, sin hacer lenta ninguna consulta. El resultado queda en el log del servidor (stderr).
+
+### Respaldo automático (7 días rotativos)
+
+El servidor MCP hace un respaldo de `memoria.db` **al arrancar** y, si sigue corriendo, revisa cada hora si ya toca el del día nuevo.
+
+- **Dónde:** `~/.stonewave/backups/memoria-AAAA-MM-DD.db` (junto a la base de datos; en Windows `C:\Users\TuUsuario\.stonewave\backups\`).
+- **Cuántos:** uno por día como máximo. Se conservan **los últimos 7 días** (hoy y los 6 anteriores); los más viejos se borran solos. Solo se tocan archivos con el patrón `<nombre-de-la-bd>-AAAA-MM-DD.db`, nunca otros archivos de esa carpeta.
+- **Cómo:** usa la API de respaldo de SQLite, así que la copia es consistente aunque otro proceso (la CLI, la API HTTP) esté escribiendo. Se escribe primero a un `.tmp` y luego se renombra, así que un corte a medias no deja un respaldo roto.
+- **Restaurar:** cierra el servidor y copia el respaldo que quieras encima de `memoria.db` (por ejemplo `Copy-Item "$HOME\.stonewave\backups\memoria-2026-11-01.db" "$HOME\.stonewave\memoria.db" -Force`). Se pierde lo guardado después de esa fecha.
+- **Ajustar o apagar:** `STONEWAVE_BACKUP_DAYS` (default `7`; `0` = sin respaldos). Desde Python: `engine.backup()`.
+- Es independiente de `memoria.db.bak-embeddings`, el respaldo de un solo uso que se crea al migrar de modelo de embeddings.
 
 ### ¿Por qué es rápida?
 
@@ -223,6 +234,7 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_AUTO_DREAM` | `true` | Sueño automático en segundo plano |
 | `STONEWAVE_DREAM_HOURS` | `12` | Cada cuántas horas conviene soñar (`0` = nunca solo) |
 | `STONEWAVE_DREAM_IDLE_MIN` | `10` | Minutos sin usar la memoria antes de soñar solo |
+| `STONEWAVE_BACKUP_DAYS` | `7` | Días de respaldos diarios que se conservan en `~/.stonewave/backups/` (`0` = sin respaldos) |
 | `STONEWAVE_QUERY_PREFIX` / `STONEWAVE_DOC_PREFIX` | según el modelo | Prefijos de pregunta y documento. Se ponen solos para `embeddinggemma` y `nomic-embed-text` |
 | `STONEWAVE_GRAPH_ENABLED` | `false` | Activa `generate_graph` |
 
@@ -432,6 +444,7 @@ api.py           # API HTTP local (solo biblioteca estandar)
 requirements.txt # dependencias (pip install -r requirements.txt)
 parsers/         # adaptadores a .jsonl (mcp_parser.py: memory.jsonl del MCP oficial de Anthropic)
 skills/          # skill para que el agente use la memoria (stonewave-memory)
+.github/workflows/test.yml  # CI: corre tests/test_engine.py en cada push/PR a main
 LICENSE          # licencia MIT
 scripts/         # benchmark_stones.py: MemBench (esqueleto de benchmark)
 tests/           # test_engine.py, test_api.py, test_doctor.py y test_benchmark.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
@@ -464,6 +477,9 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Borrar y corregir recuerdos (`forget_memory`, `update_memory`) | Hecho |
 | Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |
 | Importar/exportar en `.jsonl` universal + adaptador del MCP `memory` | Hecho |
+| Contradicciones resueltas por fecha (`created_at`), no por orden de ID | Hecho |
+| Respaldo automático diario rotativo (7 días en `~/.stonewave/backups/`) | Hecho |
+| GitHub Action que corre `tests/test_engine.py` en cada push/PR a `main` | Hecho |
 | Adaptadores para otras fuentes (Claude, ChatGPT, Markdown) | Idea |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |
 | Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |
@@ -484,6 +500,8 @@ python tests/test_benchmark.py
 ```
 
 Con Ollama encendido también: `python tests/real_test.py` y `python scripts/benchmark_stones.py`.
+
+**Integración continua:** `.github/workflows/test.yml` corre `python tests/test_engine.py` (Python 3.12, dependencias de `requirements.txt`) en cada `push` y `pull_request` a `main`. Si el check sale en rojo, algo se rompió.
 
 ## Licencia
 

@@ -61,6 +61,17 @@ def _dream_loop():
         except Exception as ex:
             print(f"StoneWave: error en el sueño automático: {ex}", file=sys.stderr)
 
+def _backup_loop():
+    """Respaldo diario: uno al arrancar el servidor y, si sigue corriendo, uno por cada dia nuevo."""
+    while True:
+        try:
+            msg = engine.backup()
+            if msg:
+                print("StoneWave:", msg, file=sys.stderr)
+        except Exception as ex:
+            print(f"StoneWave: error en el respaldo automático: {ex}", file=sys.stderr)
+        time.sleep(3600)
+
 def _quiet():
     return contextlib.redirect_stdout(sys.stderr)
 
@@ -259,6 +270,8 @@ def generate_graph(open_browser: bool = True) -> str:
     return mensaje
 
 if __name__ == "__main__":
+    if mem_engine.BACKUP_KEEP_DAYS > 0:
+        threading.Thread(target=_backup_loop, daemon=True).start()
     if AUTO_DREAM and mem_engine.DREAM_EVERY_HOURS > 0:
         threading.Thread(target=_dream_loop, daemon=True).start()
     mcp.run()

@@ -1,9 +1,7 @@
 import contextlib
-import os
 import sys
 import threading
 import time
-import webbrowser
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
@@ -12,7 +10,6 @@ sys.path.insert(0, str(BASE_DIR))
 
 import mem_engine
 from mem_engine import StoneWaveEngine, env_var
-from graph_engine import GraphEngine
 
 # Configuración de Rutas Profesionales
 DB_PATH = env_var("DB")  # si no hay, el motor usa ~/.stonewave/memoria.db
@@ -20,7 +17,6 @@ NS = env_var("NAMESPACE", "default")
 AUTO_DREAM = env_var("AUTO_DREAM", "true").lower() == "true"
 DREAM_IDLE_MIN = float(env_var("DREAM_IDLE_MIN", "10"))  # minutos sin usar la memoria para soñar solo
 _last_activity = time.time()
-GRAPH_ENABLED = env_var("GRAPH_ENABLED", "false").lower() == "true"
 
 INSTRUCTIONS = (
     "Memoria persistente PRINCIPAL del usuario entre conversaciones: úsala en lugar de cualquier otra memoria "
@@ -33,7 +29,6 @@ INSTRUCTIONS = (
     "Ambas usan el ID que aparece como [ID n] en list_memories y query_memory. "
     "query_memory también revisa la papelera (lo olvidado o reemplazado): si devuelve un Historial, ese dato YA NO ESTÁ VIGENTE. "
     "Dile al usuario qué era, cuándo se borró o cambió (y por qué valor) y ofrécele restaurarlo; si acepta, llama restore_memory con el [papelera n]. "
-    "Si el usuario quiere ver el grafo de relaciones de su memoria, llama generate_graph (requiere STONEWAVE_GRAPH_ENABLED=true)."
 )
 
 mcp = FastMCP("StoneWave", instructions=INSTRUCTIONS)
@@ -246,28 +241,6 @@ def clear_memory(confirm: bool = False) -> str:
     with _quiet():
         engine.clear_db(namespace=NS)
     return "Memoria borrada."
-
-@mcp.tool()
-def generate_graph(open_browser: bool = True) -> str:
-    """Genera un grafo visual de las relaciones entre entidades de la memoria."""
-    _touch_activity()
-    if not GRAPH_ENABLED:
-        return "El generador de grafo está desactivado."
-    
-    graph_engine = GraphEngine(engine.db_path)
-    with _quiet():
-        user_name = os.getlogin()
-        resultado = graph_engine.generate_graph_html(namespace=NS, user_name=user_name)
-        
-    output_path = resultado.get("output_path", "memoria_grafo.html")
-    mensaje = f"Grafo generado: {resultado['entities']} entidades, {resultado['relationships']} relaciones. Archivo: {output_path}"
-    if open_browser:
-        try:
-            webbrowser.open("file://" + os.path.abspath(output_path))
-            mensaje += " (abierto en el navegador)."
-        except Exception as e:
-            mensaje += f" (no se pudo abrir el navegador: {e})."
-    return mensaje
 
 if __name__ == "__main__":
     if mem_engine.BACKUP_KEEP_DAYS > 0:

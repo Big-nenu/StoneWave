@@ -267,3 +267,6 @@ Tu analogía ya está implementada en espíritu:
 | Lanzas 2 piedras más para 1 cresta final | `trigger_reflection` / `merge_waves` sintetizan varios recuerdos en una respuesta |
 
 La búsqueda por temas sería el paso previo: **decidir dónde lanzar las 5 piedras** en lugar de lanzarlas a todo el estanque.
+
+### Noviembre 2026
+- **Grafo descartado:** se quitó `graph_engine.py`, la herramienta `generate_graph` y las tablas `entities`/`relationships`. Falta definir cómo se quiere ver el grafo.

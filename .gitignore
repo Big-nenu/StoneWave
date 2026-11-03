@@ -10,5 +10,3 @@ __pycache__/
 *.bak2
 data/
 
-# Generados
-memoria_grafo.html

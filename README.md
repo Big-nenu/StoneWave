@@ -236,7 +236,6 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_DREAM_IDLE_MIN` | `10` | Minutos sin usar la memoria antes de soñar solo |
 | `STONEWAVE_BACKUP_DAYS` | `7` | Días de respaldos diarios que se conservan en `~/.stonewave/backups/` (`0` = sin respaldos) |
 | `STONEWAVE_QUERY_PREFIX` / `STONEWAVE_DOC_PREFIX` | según el modelo | Prefijos de pregunta y documento. Se ponen solos para `embeddinggemma` y `nomic-embed-text` |
-| `STONEWAVE_GRAPH_ENABLED` | `false` | Activa `generate_graph` |
 
 Se ponen dentro de `"env": { ... }` en la config del servidor.
 
@@ -253,7 +252,6 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |
 | `force_dream` | Sueño: archiva lo que no se usa, clasifica por tema y enlaza recuerdos parecidos |
 | `trigger_reflection` | Genera una intuición nueva |
-| `generate_graph` | Grafo HTML de entidades y relaciones (requiere `STONEWAVE_GRAPH_ENABLED=true`) |
 | `update_memory` | Corrige el texto de un recuerdo por su ID (conserva energía y si es fijo) |
 | `forget_memory` | Borra un recuerdo por ID, o por texto (si hay varias coincidencias pide el ID) |
 | `clear_memory` | Borra todo el namespace, incluida su papelera (irreversible) |
@@ -465,7 +463,6 @@ Lo que muestran los fallos (los mismos con 1 y 5 piedras):
 ```
 mcp_server.py    # servidor MCP (StoneWave)
 mem_engine.py    # motor de memoria (inyectar, consultar, soñar, reflexionar)
-graph_engine.py  # grafo de entidades (opcional)
 mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor, import, export)
 doctor.py        # reporte de salud de la memoria (solo lectura)
 api.py           # API HTTP local (solo biblioteca estandar)
@@ -511,6 +508,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | GitHub Action que corre `tests/test_engine.py` en cada push/PR a `main` | Hecho |
 | Adaptador de notas Markdown: `python mem_cli.py import notas.md --from markdown [--con-titulo] [-n NAMESPACE]` (acepta un `.md` o una carpeta; cada viñeta o párrafo es un recuerdo; omite front matter, código, tablas y comentarios; `--con-titulo` antepone el título de la sección; también se puede convertir aparte con `python parsers/markdown_parser.py notas.md salida.jsonl [--fijo-titulo "Sobre mi"]`) | Hecho (`parsers/markdown_parser.py`) |
 | Adaptadores para otras fuentes (Claude, ChatGPT) | Idea |
+| Grafo de entidades: se quitó (`generate_graph`, `graph_engine.py`); falta definir cómo quieres verlo | Pendiente |
 | Búsqueda de puentes semánticos entre temas distintos | Idea |
 | Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |
 

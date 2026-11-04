@@ -47,6 +47,7 @@ Cada recuerdo es un texto con su vector (embedding), una energía y, opcionalmen
 - **Sótano:** si la mejor coincidencia de la biblioteca es débil, las piedras también bajan al sótano y el Bibliotecario **resucita** el recuerdo.
 - **Sueño (`force_dream`):** (1) baja al sótano lo que lleva tiempo sin usarse, (2) clasifica por tema los recuerdos nuevos, (3) enlaza los recuerdos parecidos sin modificarlos y (4) si dos recuerdos se contradicen, el más viejo baja al sótano (el modelo tiene que decirlo en los dos órdenes para que cuente). **"Más viejo" se decide por la fecha `created_at` de cada recuerdo, no por su ID**; si tienen exactamente la misma fecha, gana el guardado después (ID mayor) y los recuerdos fijos nunca se archivan por contradicción. Lo que baja por contradicción nunca se resucita solo.
 - **Reflexión:** `trigger_reflection` genera una intuición a partir de los recuerdos con más energía y la guarda como recuerdo nuevo.
+- **Puentes (`bridge_memory`):** dados dos temas distintos (ej. «café» y «física cuántica»), devuelve los recuerdos que se parecen a **los dos a la vez**: la puntuación de cada recuerdo es la menor de sus dos similitudes, así que uno que solo encaja con un tema no cuenta. No modifica nada. También `python mem_cli.py bridge "café" "física cuántica"` o `engine.bridge(a, b)`. El umbral (`BRIDGE_MIN_SIM`) aún no está calibrado con datos reales.
 
 ### Sueño automático
 
@@ -174,7 +175,7 @@ Si tu cliente usa otra carpeta, copia ahí la carpeta `stonewave-memory`. Otra o
 
 ### Si tu agente no usa MCP
 
-- **CLI:** `python mem_cli.py inject|query|dream|reflect|clear|doctor`. Sirve para cualquier agente que pueda ejecutar comandos.
+- **CLI:** `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor`. Sirve para cualquier agente que pueda ejecutar comandos.
 - **Python:** `from mem_engine import StoneWaveEngine` para usarlo dentro de tu propio agente.
 - **API HTTP local:** `python api.py` (solo biblioteca estándar, no instala nada). Ver la sección de abajo.
 
@@ -252,13 +253,14 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |
 | `force_dream` | Sueño: archiva lo que no se usa, clasifica por tema y enlaza recuerdos parecidos |
 | `trigger_reflection` | Genera una intuición nueva |
+| `bridge_memory` | Busca los recuerdos que conectan dos temas distintos (no modifica nada) |
 | `update_memory` | Corrige el texto de un recuerdo por su ID (conserva energía y si es fijo) |
 | `forget_memory` | Borra un recuerdo por ID, o por texto (si hay varias coincidencias pide el ID) |
 | `clear_memory` | Borra todo el namespace, incluida su papelera (irreversible) |
 | `restore_memory` | Devuelve un recuerdo de la papelera a la biblioteca (por su `[papelera n]`) |
 | `empty_trash` | Borra de verdad lo de la papelera (uno por ID, o todo con `confirm=true`) |
 
-También hay una CLI: `python mem_cli.py inject|query|dream|reflect|clear|doctor|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
+También hay una CLI: `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
 
 ## Editar, borrar, importar y exportar
 
@@ -509,7 +511,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Adaptador de notas Markdown: `python mem_cli.py import notas.md --from markdown [--con-titulo] [-n NAMESPACE]` (acepta un `.md` o una carpeta; cada viñeta o párrafo es un recuerdo; omite front matter, código, tablas y comentarios; `--con-titulo` antepone el título de la sección; también se puede convertir aparte con `python parsers/markdown_parser.py notas.md salida.jsonl [--fijo-titulo "Sobre mi"]`) | Hecho (`parsers/markdown_parser.py`) |
 | Adaptador de ChatGPT y Claude: `python mem_cli.py import export.zip --from chatgpt [--con-titulo] [--min-chars 40] [--max-chars 600] [-n NAMESPACE]` (acepta `conversations.json` o el `.zip` de la exportación; solo toma TUS mensajes, omite los cortos, los muy largos y los repetidos; el formato se detecta solo, `--from claude` hace lo mismo; también se puede convertir aparte con `python parsers/chat_parser.py conversations.json salida.jsonl`) | Hecho (`parsers/chat_parser.py`) |
 | Grafo de entidades: se quitó (`generate_graph`, `graph_engine.py`); falta definir cómo quieres verlo | Pendiente |
-| Búsqueda de puentes semánticos entre temas distintos | Idea |
+| Puentes semánticos entre temas distintos (`bridge_memory`, `python mem_cli.py bridge "A" "B"`): recuerdos que se parecen a los dos temas a la vez | Hecho (umbral sin calibrar) |
 | Índice vectorial opcional (`faiss-cpu` / `chromadb`) | Idea (con numpy ya aguanta miles) |
 
 **Límites conocidos:** las contradicciones ya no se detectan al guardar sino en el sueño, así que entre un guardado y el siguiente sueño pueden coexistir dos datos que se contradicen. Los umbrales se calibraron con 12 recuerdos y pueden necesitar ajuste con una memoria grande.

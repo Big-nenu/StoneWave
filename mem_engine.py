@@ -76,6 +76,7 @@ WAVE_SIZE = 8          # recuerdos por onda
 DUPLICATE_SIM = 0.90  # arriba de esto, inyectar solo refuerza el recuerdo existente (duplicados medidos: 0.94-0.97)
 CONFLICT_SIM = 0.40  # arriba de esto, el sueño revisa si se contradicen (contradicciones medidas: 0.44-0.76)
 RELATED_SIM = 0.30  # arriba de esto, el sueño enlaza los recuerdos (sin relacion: negativo)
+BRIDGE_MIN_SIM = 0.15  # similitud minima con CADA uno de los dos temas para que un recuerdo cuente como puente (sin calibrar con datos reales)
 DREAM_MAX_CHECKS = 30  # revisiones de contradiccion con LLM por sueño
 DREAM_EVERY_HOURS = float(env_var("DREAM_HOURS", "12"))  # cada cuantas horas conviene soñar
 BACKUP_KEEP_DAYS = int(env_var("BACKUP_DAYS", "7"))  # dias de respaldos diarios que se conservan (0 = sin respaldos)
@@ -1171,6 +1172,41 @@ class StoneWaveEngine:
             with closing(sqlite3.connect(self.db_path)) as conn:
                 return conn.execute("SELECT COUNT(*) FROM facts WHERE namespace=?", (namespace,)).fetchone()[0] > 0
         return h >= hours
+
+    def bridge(self, topic_a, topic_b, namespace="default", limit=3):
+        """Puente semantico: recuerdos que se parecen a LOS DOS temas a la vez. No modifica nada.
+
+        La puntuacion de un recuerdo es la MENOR de sus dos similitudes (un recuerdo que solo encaja con un tema no es puente).
+        Devuelve un dict con 'status': 'found', 'none' (no hay puente) o 'error' (trae 'message'). Siempre trae 'a' y 'b'
+        (lo mas cercano a cada tema, o None) y 'bridges': [{id, content, energy, sim_a, sim_b, score}].
+        """
+        if not all(isinstance(x, str) and x.strip() for x in (topic_a, topic_b)):
+            return {"status": "error", "message": "bridge necesita dos temas (texto)."}
+        vecs = self.get_embeddings([topic_a.strip(), topic_b.strip()])
+        if not vecs or vecs[0] is None or vecs[1] is None:
+            return {"status": "error", "message": "No se obtuvo embedding."}
+        ids, sa = self._sims(vecs[0], namespace)
+        if not ids:
+            return {"status": "none", "bridges": [], "a": None, "b": None, "message": "La memoria esta vacia."}
+        _ids, sb = self._sims(vecs[1], namespace)
+        sa, sb = [float(x) for x in sa], [float(x) for x in sb]
+        both = [min(x, y) for x, y in zip(sa, sb)]
+        top = self._top(ids, both, limit, BRIDGE_MIN_SIM)
+        best_a, best_b = self._top(ids, sa, 1, MIN_SIM), self._top(ids, sb, 1, MIN_SIM)
+        wanted = {i for i, _s in top + best_a + best_b}
+        rows = {}
+        if wanted:
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                rows = {r[0]: (r[1], float(r[2])) for r in conn.execute(
+                    f"SELECT id, content, COALESCE(energy, 0) FROM facts WHERE id IN ({','.join('?' * len(wanted))})", list(wanted))}
+        pos = {fid: n for n, fid in enumerate(ids)}
+
+        def near(best):
+            return {"id": best[0][0], "content": rows[best[0][0]][0], "sim": best[0][1]} if best and best[0][0] in rows else None
+
+        bridges = [{"id": fid, "content": rows[fid][0], "energy": rows[fid][1], "sim_a": sa[pos[fid]], "sim_b": sb[pos[fid]], "score": s}
+                   for fid, s in top if fid in rows]
+        return {"status": "found" if bridges else "none", "bridges": bridges, "a": near(best_a), "b": near(best_b)}
 
     def reflect(self, namespace="default"):
         with sqlite3.connect(self.db_path) as conn:

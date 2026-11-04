@@ -23,6 +23,7 @@ de herramientas son los que valen.
 | Dato de identidad (nombre, carrera, familia, dónde vive o trabaja) | `inject_memory` con `fijo=true` |
 | Un dato guardado cambió o estaba mal | `update_memory` (con el `[ID n]`) |
 | El usuario pide olvidar algo | `forget_memory` (con el `[ID n]`) |
+| El usuario pregunta qué relación hay entre dos temas | `bridge_memory` (devuelve los recuerdos que conectan ambos) |
 | Pregunta por algo que borró o cambió | `query_memory`: el "Historial" que devuelve es lo olvidado/reemplazado (YA NO VIGENTE); díselo con la fecha y ofrécele restaurarlo (`restore_memory` con el `[papelera n]`). `empty_trash` solo si pide olvidarlo por completo |
 
 Los IDs salen como `[ID n]` en `list_memories` y `query_memory`. Si `forget_memory` por

@@ -18,6 +18,7 @@ mem_engine.CENTER_PRIOR = 10 ** 9  # sin centrado: los embeddings falsos no lo n
 # Umbrales para similitud coseno cruda (los embeddings falsos no estan centrados)
 mem_engine.WEAK_MATCH, mem_engine.MIN_SIM, mem_engine.WAVE_MIN_SIM = 0.65, 0.5, 0.45
 mem_engine.DUPLICATE_SIM, mem_engine.CONFLICT_SIM, mem_engine.RELATED_SIM = 0.95, 0.8, 0.6
+mem_engine.BRIDGE_MIN_SIM = 0.25
 
 
 def fake_embedding(text):
@@ -703,6 +704,71 @@ def test_cli_import_chatgpt():
     finally:
         mem_cli.StoneWaveEngine, sys.argv = old_engine, old_argv
 
+
+
+def _bridge_engine():
+    e = make_engine()
+    e.inject("El café tiene mucha cafeína por la mañana")
+    e.inject("La cafeína actúa en el cerebro y bloquea receptores")
+    e.inject("Las neuronas del cerebro transmiten señales eléctricas")
+    e.inject("Los gatos duermen mucho durante el día")
+    return e
+
+
+def test_puente_encuentra_el_recuerdo_que_une_dos_temas():
+    e = _bridge_engine()
+    before = rows(e.db_path, "SELECT id, energy, last_used FROM facts ORDER BY id")
+    r = e.bridge("café cafeína", "cerebro neuronas")
+    assert r["status"] == "found", r
+    assert [b["content"] for b in r["bridges"]] == ["La cafeína actúa en el cerebro y bloquea receptores"], r
+    b = r["bridges"][0]
+    assert b["sim_a"] > 0.25 and b["sim_b"] > 0.25 and abs(b["score"] - min(b["sim_a"], b["sim_b"])) < 1e-9, b
+    assert r["a"]["content"].startswith("El café") and r["b"]["content"].startswith("Las neuronas"), r
+    assert rows(e.db_path, "SELECT id, energy, last_used FROM facts ORDER BY id") == before  # solo lee: no cambia nada
+
+
+def test_puente_sin_conexion_y_errores():
+    e = make_engine()
+    assert e.bridge("café cafeína", "cerebro neuronas")["status"] == "none"  # memoria vacia
+    e.inject("El café tiene mucha cafeína por la mañana")
+    e.inject("Las neuronas del cerebro transmiten señales eléctricas")
+    r = e.bridge("café cafeína", "cerebro neuronas")  # cada recuerdo encaja con un solo tema: no hay puente
+    assert r["status"] == "none" and r["bridges"] == [] and r["a"] and r["b"], r
+    assert e.bridge("café cafeína", "cerebro neuronas", namespace="otro")["status"] == "none"
+    assert e.bridge("", "x")["status"] == "error" and e.bridge("x", None)["status"] == "error"
+    e.get_embeddings = lambda texts: [None for _ in texts]
+    assert e.bridge("café cafeína", "cerebro neuronas")["status"] == "error"
+
+
+def test_cli_bridge():
+    import contextlib
+    import io
+    import mem_cli
+    db = os.path.join(tempfile.mkdtemp(), "cli_bridge.db")
+    seed = make_engine(db)
+    seed.inject("El café tiene mucha cafeína por la mañana")
+    seed.inject("La cafeína actúa en el cerebro y bloquea receptores")
+    seed.inject("Las neuronas del cerebro transmiten señales eléctricas")
+    old_engine, old_argv = mem_cli.StoneWaveEngine, sys.argv
+    mem_cli.StoneWaveEngine = lambda: make_engine(db)
+
+    def run(*args):
+        sys.argv = ["mem_cli.py", *args]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            try:
+                mem_cli.main()
+                code = 0
+            except SystemExit as ex:
+                code = ex.code or 0
+        return code, buf.getvalue()
+    try:
+        code, out = run("bridge", "café cafeína", "cerebro neuronas")
+        assert code == 0 and "Puentes entre" in out and "La cafeína actúa en el cerebro" in out and "Lo más cercano a" in out, out
+        code, out = run("bridge", "solo un tema")
+        assert code == 1 and "dos temas" in out, out
+    finally:
+        mem_cli.StoneWaveEngine, sys.argv = old_engine, old_argv
 
 
 if __name__ == "__main__":

@@ -22,9 +22,10 @@ def _print_import_summary(s):
 
 def main():
     parser = argparse.ArgumentParser(description="StoneWave CLI - Gestor de Memoria Semántica")
-    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear", "doctor", "import", "export"],
+    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear", "doctor", "import", "export", "bridge"],
                         help="Comando a ejecutar (doctor = reporte de salud; import/export = recuerdos en .jsonl)")
     parser.add_argument("text", nargs="?", help="Texto para inyectar o consultar; o el archivo .jsonl para import / export")
+    parser.add_argument("text2", nargs="?", help="Segundo tema (solo para el comando bridge)")
     parser.add_argument("-n", "--namespace", default=None,
                         help="Namespace/Proyecto (default: 'default'). En import, si lo das, TODO va a ese namespace; "
                              "si no, se respeta el de cada línea. En export, si no lo das, se exportan todos")
@@ -79,6 +80,24 @@ def main():
         result = engine.reflect(namespace=ns)
         if result:
             print(result)
+
+    elif args.command == "bridge":
+        if not args.text or not args.text2:
+            print("Error: El comando 'bridge' requiere dos temas.  Ej: python mem_cli.py bridge \"café\" \"física cuántica\"")
+            sys.exit(1)
+        res = engine.bridge(args.text, args.text2, namespace=ns)
+        if res["status"] == "error":
+            print(res["message"])
+            sys.exit(1)
+        if res["bridges"]:
+            print(f"Puentes entre '{args.text}' y '{args.text2}':")
+            for b in res["bridges"]:
+                print(f"  [ID {b['id']}] (A {b['sim_a']:.2f} | B {b['sim_b']:.2f}) {b['content']}")
+        else:
+            print(f"No hay un recuerdo que conecte '{args.text}' con '{args.text2}'.")
+        for label, key in ((args.text, "a"), (args.text2, "b")):
+            if res.get(key):
+                print(f"Lo más cercano a '{label}': [ID {res[key]['id']}] {res[key]['content']}")
 
     elif args.command == "clear":
         engine.clear_db(namespace=ns)

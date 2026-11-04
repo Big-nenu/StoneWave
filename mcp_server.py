@@ -217,6 +217,26 @@ def empty_trash(trash_id: int | None = None, confirm: bool = False) -> str:
     return f"Papelera: {n} recuerdo(s) borrado(s) para siempre." if n else "No había nada que borrar en la papelera."
 
 @mcp.tool()
+def bridge_memory(topic_a: str, topic_b: str) -> str:
+    """Busca los recuerdos que conectan dos temas distintos (ej. "café" y "física cuántica"): los que se parecen a LOS DOS a la vez.
+    Úsala cuando el usuario pregunte qué relación hay entre dos temas o quiera ideas que los unan. No modifica nada."""
+    _touch_activity()
+    with _quiet():
+        res = engine.bridge(topic_a, topic_b, namespace=NS)
+    if res["status"] == "error":
+        return f"No se pudo buscar el puente: {res['message']}"
+    out = []
+    if res["bridges"]:
+        out.append("Recuerdos que conectan los dos temas:")
+        out += [f"- [ID {b['id']}] (tema A {b['sim_a']:.2f} | tema B {b['sim_b']:.2f}) {b['content']}" for b in res["bridges"]]
+    else:
+        out.append("No hay un recuerdo guardado que conecte esos dos temas.")
+    for label, key in (("A", "a"), ("B", "b")):
+        if res.get(key):
+            out.append(f"Lo más cercano al tema {label}: [ID {res[key]['id']}] {res[key]['content']}")
+    return "\n".join(out)
+
+@mcp.tool()
 def force_dream() -> str:
     """Sueño: baja al sótano lo que no se usa, clasifica por temas y enlaza recuerdos parecidos (no reescribe nada)."""
     _touch_activity()

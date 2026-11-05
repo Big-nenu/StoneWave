@@ -7,6 +7,7 @@ import json
 import requests
 import math
 import time
+import unicodedata
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -672,6 +673,13 @@ class StoneWaveEngine:
             conn.commit()
         self._sync_version()  # solo cambio energia, los vectores siguen validos
 
+    PAST_HINTS = ("antigu", "anterior", "antes", "pasad", "previ", "viej", "solia", "ya no")
+
+    def _asks_past(self, text):
+        """True si la pregunta pide algo de antes ('mi antigua jefa', 'mi bicicleta anterior'): ahi el sotano tambien cuenta."""
+        t = "".join(c for c in unicodedata.normalize("NFKD", text.lower()) if not unicodedata.combining(c))
+        return any(h in t for h in self.PAST_HINTS)
+
     def query(self, text, namespace="default"):
         stones = self._make_stones(text)
         vecs = self.get_embeddings(stones)
@@ -680,14 +688,15 @@ class StoneWaveEngine:
         waves = self._throw(vecs, namespace, "facts")
         active = self._rank(waves, namespace, "facts")
         best_active = waves[0][0][1] if waves[0] else 0.0
-        if active and best_active >= WEAK_MATCH:
+        past = self._asks_past(text)
+        if active and best_active >= WEAK_MATCH and not past:  # si pide algo del pasado, tambien se mira el sotano
             self._touch(active)
             return active
 
         # Coincidencia debil o nula: el Bibliotecario baja al sotano y lanza las piedras alla
         arch_waves = self._throw(vecs, namespace, "archived_facts")
         arch = self._rank(arch_waves, namespace, "archived_facts", use_links=False)
-        if arch and arch[0][0] > best_active:
+        if arch and (arch[0][0] > best_active or past):
             sim, aid, aenergy, content = arch[0]
             new_energy = min(1.0, float(aenergy or 0.5) + 0.2)
             with sqlite3.connect(self.db_path) as conn:

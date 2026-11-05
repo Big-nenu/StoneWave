@@ -771,6 +771,25 @@ def test_cli_bridge():
         mem_cli.StoneWaveEngine, sys.argv = old_engine, old_argv
 
 
+def test_pregunta_del_pasado_mira_el_sotano_aunque_haya_un_recuerdo_actual_parecido():
+    saved = (mem_engine.WEAK_MATCH, mem_engine.MIN_SIM, mem_engine.WAVE_MIN_SIM)
+    mem_engine.WEAK_MATCH = mem_engine.MIN_SIM = mem_engine.WAVE_MIN_SIM = 0.2  # fuerza que la biblioteca "gane" con el actual
+    try:
+        e = make_engine()
+        e.inject("Mi antigua jefa se llamaba Verónica Soto")
+        e.inject("Mi jefa actual se llama Gisela")
+        e.inject("El reporte se entrega los viernes")
+        age(e.db_path, 250, "content LIKE '%antigua%'")
+        assert e.decay() == 1
+        res = e.query("¿Cómo se llama mi jefa?")  # sin pista de pasado: responde el actual y no baja al sotano
+        assert "Gisela" in res[0][3], res
+        assert len(rows(e.db_path, "SELECT * FROM archived_facts")) == 1
+        res = e.query("¿Cómo se llamaba mi antigua jefa?")
+        assert isinstance(res, list) and "Verónica" in res[0][3], res
+    finally:
+        mem_engine.WEAK_MATCH, mem_engine.MIN_SIM, mem_engine.WAVE_MIN_SIM = saved
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

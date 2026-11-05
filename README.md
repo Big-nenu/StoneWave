@@ -264,6 +264,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `clear_memory` | Borra todo el namespace, incluida su papelera (irreversible) |
 | `restore_memory` | Devuelve un recuerdo de la papelera a la biblioteca (por su `[papelera n]`) |
 | `empty_trash` | Borra de verdad lo de la papelera (uno por ID, o todo con `confirm=true`) |
+| `sync_memory` | Sincroniza con el archivo compartido (`STONEWAVE_SYNC`), por ejemplo el de tu bóveda de Obsidian; solo cuando lo pides |
 
 También hay una CLI: `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|setup|sync|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
 
@@ -327,6 +328,8 @@ git add . && git commit -m "sync memoria" && git push   # 3. sube el resultado
 `sync` acepta una carpeta (usa el archivo `stonewave-memoria.jsonl` dentro) o la ruta de un `.jsonl`. También puedes definir `STONEWAVE_SYNC` y correr solo `python mem_cli.py sync`.
 
 Qué hace, en dos pasos: (1) **importa** lo que haya en el archivo (lo que ya existe no se duplica ni se refuerza, así que sincronizar muchas veces no infla la energía) y (2) **escribe** el archivo con la unión de todo, ordenado y con la energía redondeada a un decimal para que git casi no vea cambios sueltos. Los vectores no viajan en el archivo: cada equipo los recalcula con su propio Ollama.
+
+**Desde el agente:** si defines `STONEWAVE_SYNC` en el `"env"` de la config del servidor MCP, basta decirle al agente "sincroniza la memoria": llama a la herramienta `sync_memory` (la skill ya lo indica). Hace solo el paso de unir; subir y bajar el archivo lo hace git / Obsidian Git.
 
 **Seguridad:** si el archivo trae líneas inválidas (por ejemplo marcas de conflicto de git `<<<<<<<`) o Ollama no responde al importar, `sync` **no escribe nada** y te avisa, para no borrar lo del otro equipo. Resuelve el conflicto y vuelve a correrlo.
 

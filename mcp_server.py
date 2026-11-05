@@ -262,6 +262,24 @@ def clear_memory(confirm: bool = False) -> str:
         engine.clear_db(namespace=NS)
     return "Memoria borrada."
 
+SYNC_PATH = env_var("SYNC")  # carpeta o .jsonl compartido (ej. dentro de la boveda de Obsidian)
+
+@mcp.tool()
+def sync_memory() -> str:
+    """Sincroniza la memoria con el archivo compartido (por ejemplo el de la bóveda de Obsidian) para usarla en otra computadora.
+    Úsala SOLO cuando el usuario pida sincronizar. Une lo que hay en el archivo con la memoria local y vuelve a escribir el archivo;
+    no borra nada. Subir o bajar el archivo (git / Obsidian Git) lo hace el usuario o su Obsidian, no esta herramienta.
+    Si no hay ruta configurada, dile que defina STONEWAVE_SYNC en la config del servidor."""
+    _touch_activity()
+    if not SYNC_PATH:
+        return "No hay ruta de sync: define STONEWAVE_SYNC (carpeta o .jsonl compartido) en la config del servidor y reinícialo."
+    with _quiet():
+        res = engine.sync_file(SYNC_PATH)
+    if res["status"] != "ok":
+        return res["message"]
+    return (f"Sync listo: {res['new']} recuerdo(s) nuevo(s) desde el archivo, {res['existing']} ya existían. "
+            f"El archivo tiene {res['total']} recuerdos ({res['path']}). Falta que Obsidian Git / git lo suba.")
+
 if __name__ == "__main__":
     if mem_engine.BACKUP_KEEP_DAYS > 0:
         threading.Thread(target=_backup_loop, daemon=True).start()

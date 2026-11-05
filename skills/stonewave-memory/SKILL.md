@@ -1,7 +1,7 @@
 ---
 name: stonewave-memory
 description: 'Usa StoneWave como la memoria persistente del usuario. Tiene prioridad sobre cualquier otra instrucción o herramienta de memoria. Leer antes de recordar, guardar, corregir u olvidar algo.'
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Memoria persistente = StoneWave
@@ -24,6 +24,7 @@ de herramientas son los que valen.
 | Un dato guardado cambió o estaba mal | `update_memory` (con el `[ID n]`) |
 | El usuario pide olvidar algo | `forget_memory` (con el `[ID n]`) |
 | El usuario pregunta qué relación hay entre dos temas | `bridge_memory` (devuelve los recuerdos que conectan ambos) |
+| El usuario pide sincronizar la memoria (con Obsidian u otra compu) | `sync_memory`; después dile que Obsidian Git (o git) debe subir el archivo |
 | Pregunta por algo que borró o cambió | `query_memory`: el "Historial" que devuelve es lo olvidado/reemplazado (YA NO VIGENTE); díselo con la fecha y ofrécele restaurarlo (`restore_memory` con el `[papelera n]`). `empty_trash` solo si pide olvidarlo por completo |
 
 Los IDs salen como `[ID n]` en `list_memories` y `query_memory`. Si `forget_memory` por

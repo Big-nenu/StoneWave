@@ -450,13 +450,15 @@ python scripts/benchmark_stones.py --cases tests/membench_cases.jsonl --no-topic
 
 **Repetición en la PC de casa (4 nov 2026, 50 casos, `--json bench_casa.json`):** mismo resultado, **42/50 (84 %) con 1 y con 5 piedras** (cobertura 91 % vs 92 %), 38 ms vs 70 ms por consulta. Los fallos son los mismos: 2 de varios hechos, 3 de contradicción, 2 de sótano y 1 sin respuesta. Al repetirse igual, el 84 % se ve estable y no una casualidad de una corrida.
 
+**Después de la pista de pasado en `query` (5 piedras, 50 casos, `--json bench_sotano.json`):** **44/50 (88 %)**, cobertura 96 %, 68 ms por consulta. Sótano sube de 6/8 a **8/8**; single (14/14), varios hechos (12/14), contradicciones (7/10) y sin respuesta (3/4) quedan igual, así que no rompió nada.
+
 **En una laptop de oficina (i5-7200U, 2 núcleos, 16 GB, sin GPU):** pendiente. La corrida completa tardó más de una hora sin terminar y Ollama se cayó con la RAM al tope; por eso el benchmark ahora muestra avance y se detiene si Ollama deja de responder.
 
 Lo que muestran los fallos (los mismos con 1 y 5 piedras):
 
 - **Las 5 piedras no ayudaron en este dataset:** igual acierto, el doble de tiempo (solo mejoraron la cobertura en un caso de varios hechos). Con corpus de ~13 recuerdos no hay margen; falta probar con memorias más grandes antes de decidir.
 - **Contradicciones (3 fallos):** dos casos (`contradiccion_03`, `_04`) no se detectan porque la similitud entre los dos recuerdos (0.32) queda bajo `CONFLICT_SIM` (0.40) y el sueño ni se los muestra al modelo, que sí los marcaría como contradictorios. El tercero (`_05`) llega justo al umbral pero `tev` se contradice según el orden en que ve las frases, y se exige que coincida en ambos. **Probado y descartado:** bajar `CONFLICT_SIM` empeora el total (5 piedras, 50 casos): 0.40 → 42/50, 0.35 → 38/50, 0.30 → 38/50. Con 0.30 las contradicciones suben de 7/10 a 9/10, pero 5 casos de varios hechos se rompen, porque `tev` marca como contradictorios datos que solo se complementan (ej. "doctor Vega" y "dentista Salinas") y el sueño archiva uno. Se queda en 0.40; el cuello de botella es la precisión de `tev` en esos pares, no el umbral.
-- **Sótano (2 fallos):** si hay un recuerdo activo parecido (ej. "mi jefa **actual**" vs. "mi **antigua** jefa") la coincidencia de la biblioteca es fuerte, no se busca en el sótano y el recuerdo archivado no sale.
+- **Sótano (2 fallos): arreglado.** Si había un recuerdo activo parecido (ej. 'mi jefa **actual**' vs. 'mi **antigua** jefa') la biblioteca ganaba con coincidencia fuerte y el archivado no salía. Ahora una pregunta con pista de pasado ('antigua', 'anterior', 'antes'...) también busca en el sótano.
 - **Sin respuesta (1 fallo):** una pregunta cercana ("¿cómo se llama mi dentista?" con otros doctores guardados) devuelve el recuerdo parecido en vez de nada.
 - **Varios hechos (2 fallos):** un recuerdo esperado queda fuera del top-3 (`multi_07`, `multi_08`).
 
@@ -509,7 +511,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Parcial: con el dataset de 50 casos y ~13 recuerdos no hay diferencia (84 % vs 84 %); falta probar con una memoria grande |
 | Esqueleto de MemBench (`scripts/benchmark_stones.py`: inyecta → dream → query → compara con lo esperado) | Hecho (el viejo `tests/benchmark_runner.py` mide fusión y quedó obsoleto) |
 | Dataset grande de MemBench (50 casos: un hecho, varios hechos, contradicciones, sótano, sin respuesta) | Hecho (`tests/membench_cases.jsonl`) |
-| Ajustar `CONFLICT_SIM` (0.40 → ~0.30) y revisar el sótano cuando hay un recuerdo activo parecido, según los fallos de MemBench | Probado (0.30 y 0.35 empeoran, se queda en 0.40); sigue pendiente el caso del sótano |
+| Ajustar `CONFLICT_SIM` (0.40 → ~0.30) y revisar el sótano cuando hay un recuerdo activo parecido, según los fallos de MemBench | Hecho: `CONFLICT_SIM` 0.30 y 0.35 empeoran (se queda en 0.40); el sótano se arregló con la pista de pasado en `query` (8/8) |
 | API HTTP local para agentes sin MCP (`api.py`: `/inject`, `/query`, `/dream`) | Hecho |
 | Borrar y corregir recuerdos (`forget_memory`, `update_memory`) | Hecho |
 | Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |

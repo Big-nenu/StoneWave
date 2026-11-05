@@ -447,6 +447,10 @@ python scripts/benchmark_stones.py --cases tests/membench_cases.jsonl --no-topic
 | **Total (50)** | **42/50 (84 %)** | **42/50 (84 %)** |
 | Tiempo medio por consulta | 38 ms | 76 ms |
 
+**Repetición en la PC de casa (4 nov 2026, 50 casos, `--json bench_casa.json`):** mismo resultado, **42/50 (84 %) con 1 y con 5 piedras** (cobertura 91 % vs 92 %), 38 ms vs 70 ms por consulta. Los fallos son los mismos: 2 de varios hechos, 3 de contradicción, 2 de sótano y 1 sin respuesta. Al repetirse igual, el 84 % se ve estable y no una casualidad de una corrida.
+
+**En una laptop de oficina (i5-7200U, 2 núcleos, 16 GB, sin GPU):** pendiente. La corrida completa tardó más de una hora sin terminar y Ollama se cayó con la RAM al tope; por eso el benchmark ahora muestra avance y se detiene si Ollama deja de responder.
+
 Lo que muestran los fallos (los mismos con 1 y 5 piedras):
 
 - **Las 5 piedras no ayudaron en este dataset:** igual acierto, el doble de tiempo (solo mejoraron la cobertura en un caso de varios hechos). Con corpus de ~13 recuerdos no hay margen; falta probar con memorias más grandes antes de decidir.

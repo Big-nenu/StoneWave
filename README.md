@@ -110,6 +110,8 @@ cd StoneWave
 pip install -r requirements.txt   # fija mcp<2: la serie 2.x cambió la API y rompe el servidor
 ```
 
+**Atajo:** `python mem_cli.py setup` revisa Python y paquetes, revisa Ollama y los modelos, e imprime la configuración MCP **con tus rutas ya puestas** (para pegarla en Cline, Claude Desktop, Cursor...), el comando de Claude Code y el de la skill. Con `--pull` descarga los modelos que falten (`ollama pull`). No modifica nada más y sale con código `1` si hay algo que arreglar.
+
 Modelos de Ollama:
 
 ```bash
@@ -175,7 +177,7 @@ Si tu cliente usa otra carpeta, copia ahí la carpeta `stonewave-memory`. Otra o
 
 ### Si tu agente no usa MCP
 
-- **CLI:** `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor`. Sirve para cualquier agente que pueda ejecutar comandos.
+- **CLI:** `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|setup`. Sirve para cualquier agente que pueda ejecutar comandos.
 - **Python:** `from mem_engine import StoneWaveEngine` para usarlo dentro de tu propio agente.
 - **API HTTP local:** `python api.py` (solo biblioteca estándar, no instala nada). Ver la sección de abajo.
 
@@ -262,7 +264,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `restore_memory` | Devuelve un recuerdo de la papelera a la biblioteca (por su `[papelera n]`) |
 | `empty_trash` | Borra de verdad lo de la papelera (uno por ID, o todo con `confirm=true`) |
 
-También hay una CLI: `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
+También hay una CLI: `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|setup|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
 
 ## Editar, borrar, importar y exportar
 
@@ -478,6 +480,7 @@ mcp_server.py    # servidor MCP (StoneWave)
 mem_engine.py    # motor de memoria (inyectar, consultar, soñar, reflexionar)
 mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor, import, export)
 doctor.py        # reporte de salud de la memoria (solo lectura)
+setup_wizard.py  # `mem_cli.py setup`: revisa la instalación e imprime la config MCP
 api.py           # API HTTP local (solo biblioteca estandar)
 requirements.txt # dependencias (pip install -r requirements.txt)
 parsers/         # adaptadores a .jsonl (mcp_parser.py: MCP oficial de Anthropic; markdown_parser.py: notas .md; chat_parser.py: ChatGPT/Claude)
@@ -485,7 +488,7 @@ skills/          # skill para que el agente use la memoria (stonewave-memory)
 .github/workflows/test.yml  # CI: corre tests/test_engine.py en cada push/PR a main
 LICENSE          # licencia MIT
 scripts/         # benchmark_stones.py: MemBench (esqueleto de benchmark)
-tests/           # test_engine.py, test_api.py, test_doctor.py y test_benchmark.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
+tests/           # test_engine.py, test_api.py, test_doctor.py, test_setup.py y test_benchmark.py (sin Ollama), real_test.py y embed_lab.py (con Ollama), bench_speed.py
 docs/            # ideas, experimentos y bitácora de diseño (BITACORA.md)
 archive/v0.1/    # prototipos y scripts de la primera version (historial, sin mantener)
 ```
@@ -506,6 +509,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Sueño automático en segundo plano (cuando toca y no se usa la memoria) | Hecho |
 | Comando `doctor`: reporte de salud (BD, sótano, Ollama, último sueño) | Hecho |
 | Doctor solucionador: si hay un fallo grave imprime las soluciones sugeridas (comandos exactos) | Hecho |
+| Comando `setup`: revisa la instalación, descarga modelos (`--pull`) e imprime la config MCP con tus rutas | Hecho |
 | Limpieza del repo: prototipos y scripts viejos movidos a `archive/v0.1/` | Hecho |
 | Probar con una memoria real grande (cientos de recuerdos) y reajustar umbrales si hace falta | Pendiente |
 | Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Parcial: con el dataset de 50 casos y ~13 recuerdos no hay diferencia (84 % vs 84 %); falta probar con una memoria grande |
@@ -537,6 +541,7 @@ Antes de subir cambios, corre las pruebas (ninguna de estas necesita Ollama):
 python tests/test_engine.py
 python tests/test_api.py
 python tests/test_doctor.py
+python tests/test_setup.py
 python tests/test_benchmark.py
 ```
 

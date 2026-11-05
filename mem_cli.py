@@ -22,7 +22,7 @@ def _print_import_summary(s):
 
 def main():
     parser = argparse.ArgumentParser(description="StoneWave CLI - Gestor de Memoria Semántica")
-    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear", "doctor", "import", "export", "bridge"],
+    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear", "doctor", "setup", "import", "export", "bridge"],
                         help="Comando a ejecutar (doctor = reporte de salud; import/export = recuerdos en .jsonl)")
     parser.add_argument("text", nargs="?", help="Texto para inyectar o consultar; o el archivo .jsonl para import / export")
     parser.add_argument("text2", nargs="?", help="Segundo tema (solo para el comando bridge)")
@@ -40,10 +40,15 @@ def main():
                         help="En import --from markdown/chatgpt/claude: antepone el título de la sección o conversación a sus recuerdos")
     parser.add_argument("--min-chars", type=int, default=40, help="En import --from chatgpt/claude: largo minimo de un mensaje (default: 40)")
     parser.add_argument("--max-chars", type=int, default=600, help="En import --from chatgpt/claude: largo maximo de un mensaje (default: 600)")
+    parser.add_argument("--pull", action="store_true", help="En setup: descargar con 'ollama pull' los modelos que falten")
     parser.add_argument("--no-dream", action="store_true", help="En import: no correr el sueño al terminar")
 
     args = parser.parse_args()
     ns = args.namespace or "default"
+
+    if args.command == "setup":
+        from setup_wizard import run_setup  # no abre el motor
+        sys.exit(run_setup(pull=args.pull))
 
     if args.command == "doctor":
         from doctor import run_doctor  # solo lectura: no abre el motor ni modifica nada

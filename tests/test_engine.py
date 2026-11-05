@@ -790,6 +790,44 @@ def test_pregunta_del_pasado_mira_el_sotano_aunque_haya_un_recuerdo_actual_parec
         mem_engine.WEAK_MATCH, mem_engine.MIN_SIM, mem_engine.WAVE_MIN_SIM = saved
 
 
+def test_sync_entre_dos_compus_une_sin_duplicar_ni_inflar_energia():
+    folder = tempfile.mkdtemp()
+    a, b = make_engine(), make_engine()
+    A1, B1 = "Luis trabaja en Neodata en Guadalajara", "El telescopio de mi vecino tiene montura ecuatorial"
+    a.inject(A1)
+    r = a.sync_file(folder)
+    assert r["status"] == "ok" and r["total"] == 1 and os.path.basename(r["path"]) == mem_engine.SYNC_FILENAME, r
+    b.inject(B1)
+    r = b.sync_file(folder)
+    assert r["status"] == "ok" and r["new"] == 1 and r["total"] == 2, r
+    assert sorted(b.get_all_facts()) == sorted([A1, B1])
+    for _ in range(3):
+        r = a.sync_file(folder)
+        b.sync_file(folder)
+    assert sorted(a.get_all_facts()) == sorted([A1, B1])
+    assert rows(a.db_path, "SELECT energy FROM facts WHERE content LIKE 'Luis%'") == [(0.5,)]  # sync repetido no sube la energia
+    with open(r["path"], "rb") as f:
+        first = f.read()
+    a.sync_file(folder)
+    with open(r["path"], "rb") as f:
+        assert f.read() == first  # sin cambios nuevos, el archivo queda identico (git no ve diferencias)
+
+
+def test_sync_se_niega_si_el_archivo_trae_lineas_invalidas():
+    folder = tempfile.mkdtemp()
+    path = os.path.join(folder, mem_engine.SYNC_FILENAME)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('{"content": "Dato bueno del otro equipo"}\n<<<<<<< HEAD\n')
+    e = make_engine()
+    e.inject("Luis trabaja en Neodata en Guadalajara")
+    with open(path, encoding="utf-8") as f:
+        before = f.read()
+    r = e.sync_file(path)
+    assert r["status"] == "blocked" and "conflicto" in r["message"], r
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == before  # no se sobrescribio: no se pierde lo del otro equipo
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

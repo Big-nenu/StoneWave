@@ -85,6 +85,8 @@ BACKUP_KEEP_DAYS = int(env_var("BACKUP_DAYS", "7"))  # dias de respaldos diarios
 BACKUP_NAME = re.compile(r"^(?P<stem>.+)-(?P<day>\d{4}-\d{2}-\d{2})\.db$")
 ANGLE_WEIGHT = 0.5     # peso de las piedras-angulo frente a la pregunta completa
 
+SYNC_FILENAME = "stonewave-memoria.jsonl"  # nombre del archivo compartido de `sync`
+
 STOPWORDS = {
     "que", "como", "cual", "cuales", "quien", "donde", "cuando", "cuanto", "para", "por",
     "con", "sin", "sobre", "entre", "del", "los", "las", "una", "uno", "unos", "unas",
@@ -528,7 +530,7 @@ class StoneWaveEngine:
     # ------------------------------------------------------------------
     # Guardar
     # ------------------------------------------------------------------
-    def inject(self, content, energy=0.5, namespace="default", pinned=False, source=None, created_at=None):
+    def inject(self, content, energy=0.5, namespace="default", pinned=False, source=None, created_at=None, reinforce=True):
         """Guarda un recuerdo. Rapido: no usa LLM. El sueño se encarga de ordenar y enlazar."""
         vec = self.get_embedding(content)
         if vec is None:
@@ -539,6 +541,11 @@ class StoneWaveEngine:
             cursor = conn.cursor()
             if dup:
                 fid, sim = dup[0]
+                if not reinforce:  # sync: lo que ya existe no se refuerza (si no, cada sync inflaria la energia)
+                    if pinned:
+                        cursor.execute("UPDATE facts SET pinned=1 WHERE id=?", (fid,))
+                    conn.commit()
+                    return f"= YA EXISTE (ID {fid}, Sim: {sim:.2f})."
                 cursor.execute("UPDATE facts SET energy=MIN(1.0, COALESCE(energy, 0.5) + 0.2), last_used=? WHERE id=?", (time.time(), fid))
                 if pinned:
                     cursor.execute("UPDATE facts SET pinned=1 WHERE id=?", (fid,))
@@ -990,7 +997,7 @@ class StoneWaveEngine:
                 }, ensure_ascii=False) + "\n")
         return len(rows)
 
-    def import_records(self, records, namespace=None, run_dream=True, default_source="import"):
+    def import_records(self, records, namespace=None, run_dream=True, default_source="import", reinforce=True):
         """Importa recuerdos (dicts con el formato canonico) llamando a inject() con cada uno.
 
         namespace: si se da, TODOS van a ese namespace; si no, se respeta el de cada registro (o 'default').
@@ -1018,7 +1025,7 @@ class StoneWaveEngine:
             except (TypeError, ValueError):
                 summary["invalid"].append((where, "'energy' debe ser un numero entre 0 y 1"))
                 continue
-            msg = self.inject(content.strip(), energy=energy, namespace=ns, pinned=bool(rec.get("fijo", False)),
+            msg = self.inject(content.strip(), reinforce=reinforce, energy=energy, namespace=ns, pinned=bool(rec.get("fijo", False)),
                               source=str(rec.get("source") or default_source),
                               created_at=self._parse_created_at(rec.get("created_at")))
             if "ERROR" in msg:
@@ -1045,7 +1052,7 @@ class StoneWaveEngine:
                     summary["dream"].append(f"El sueño de '{ns}' fallo: {ex}")
         return summary
 
-    def import_memories(self, path, namespace=None, run_dream=True):
+    def import_memories(self, path, namespace=None, run_dream=True, reinforce=True):
         """Importa un .jsonl canonico (ver export_memories). Las lineas invalidas se reportan, no detienen la importacion."""
         records, invalid = [], []
         with open(path, encoding="utf-8-sig") as f:  # utf-8-sig tolera el BOM de Windows
@@ -1063,9 +1070,45 @@ class StoneWaveEngine:
                     continue
                 rec["_line"] = ln
                 records.append(rec)
-        summary = self.import_records(records, namespace=namespace, run_dream=run_dream)
+        summary = self.import_records(records, namespace=namespace, run_dream=run_dream, reinforce=reinforce)
         summary["invalid"] = sorted(invalid + summary["invalid"])
         return summary
+
+    def sync_file(self, path):
+        """Une esta memoria con un .jsonl compartido (por ejemplo en un repo privado) para usarla en varias compus.
+
+        'path' es el archivo o una carpeta (ahi se usa SYNC_FILENAME). Hace dos pasos: 1) importa lo que haya en el archivo
+        (lo que ya existe NO se refuerza, no se duplica y no se infla su energia) y 2) escribe el archivo con la union de todo.
+        Si algo sale mal al importar (Ollama caido, lineas invalidas o marcas de conflicto de git) NO escribe el archivo,
+        para no borrar los recuerdos de la otra compu.
+
+        Devuelve un dict: status 'ok' (path, total, new, existing) o 'blocked' (message).
+        """
+        path = str(path)
+        if os.path.isdir(path):
+            path = os.path.join(path, SYNC_FILENAME)
+        new = existing = 0
+        if os.path.exists(path):
+            s = self.import_memories(path, namespace=None, run_dream=True, reinforce=False)
+            if s["invalid"]:
+                ln, why = s["invalid"][0]
+                return {"status": "blocked", "message": f"No se sincronizo: el archivo tiene {len(s['invalid'])} linea(s) invalida(s) "
+                        f"(primera: {ln}, {why}). Si es un conflicto de git, resuelvelo y vuelve a correr sync."}
+            if s["aborted"] or s["errors"]:
+                return {"status": "blocked", "message": "No se sincronizo: Ollama no respondio al importar. Revisa con "
+                        "'python mem_cli.py doctor' y vuelve a correr sync (el archivo no se toco)."}
+            new, existing = s["new"], s["reinforced"]
+        tmp = path + ".tmp"
+        total = self.export_memories(tmp)
+        with open(tmp, encoding="utf-8") as f:
+            recs = [json.loads(l) for l in f if l.strip()]
+        recs.sort(key=lambda r: (r["namespace"], r.get("created_at") or "", r["content"]))  # orden estable: git fusiona mejor
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            for r in recs:
+                r["energy"] = round(float(r["energy"]), 1)  # menos cambios sueltos entre equipos
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+        return {"status": "ok", "path": path, "total": total, "new": new, "existing": existing}
 
     def get_all_facts(self, namespace="default"):
         with sqlite3.connect(self.db_path) as conn:

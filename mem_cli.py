@@ -22,7 +22,7 @@ def _print_import_summary(s):
 
 def main():
     parser = argparse.ArgumentParser(description="StoneWave CLI - Gestor de Memoria Semántica")
-    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear", "doctor", "setup", "import", "export", "bridge"],
+    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear", "doctor", "setup", "sync", "import", "export", "bridge"],
                         help="Comando a ejecutar (doctor = reporte de salud; import/export = recuerdos en .jsonl)")
     parser.add_argument("text", nargs="?", help="Texto para inyectar o consultar; o el archivo .jsonl para import / export")
     parser.add_argument("text2", nargs="?", help="Segundo tema (solo para el comando bridge)")
@@ -146,6 +146,19 @@ def main():
         _print_import_summary(summary)
         if summary["aborted"]:
             sys.exit(1)
+
+    elif args.command == "sync":
+        from mem_engine import env_var
+        target = args.text or env_var("SYNC")
+        if not target:
+            print("Error: sync necesita la carpeta (o el .jsonl) compartida.  Ej: python mem_cli.py sync C:\\ruta\\a\\mi-repo\\stonewave")
+            sys.exit(1)
+        res = engine.sync_file(target)
+        if res["status"] != "ok":
+            print(res["message"])
+            sys.exit(1)
+        print(f"Sync listo: {res['new']} recuerdo(s) nuevo(s) desde el archivo, {res['existing']} ya existian. "
+              f"El archivo ahora tiene {res['total']} recuerdos: {res['path']}")
 
     elif args.command == "export":
         if not args.text:

@@ -177,7 +177,7 @@ Si tu cliente usa otra carpeta, copia ahí la carpeta `stonewave-memory`. Otra o
 
 ### Si tu agente no usa MCP
 
-- **CLI:** `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|setup`. Sirve para cualquier agente que pueda ejecutar comandos.
+- **CLI:** `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|setup|sync`. Sirve para cualquier agente que pueda ejecutar comandos.
 - **Python:** `from mem_engine import StoneWaveEngine` para usarlo dentro de tu propio agente.
 - **API HTTP local:** `python api.py` (solo biblioteca estándar, no instala nada). Ver la sección de abajo.
 
@@ -233,6 +233,7 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_STONES` | `5` | Piedras por consulta |
 | `STONEWAVE_RESULTS` | `3` | Máximo de recuerdos que devuelve una consulta |
 | `STONEWAVE_CONFLICT_SIM` | `0.40` | Similitud mínima para que el sueño revise si dos recuerdos se contradicen (más bajo = revisa más pares, más lento) |
+| `STONEWAVE_SYNC` | (vacío) | Carpeta o `.jsonl` compartido que usa `python mem_cli.py sync` si no das la ruta |
 | `STONEWAVE_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (en las pruebas salió peor y más lento) |
 | `STONEWAVE_API_HOST` / `STONEWAVE_API_PORT` | `127.0.0.1` / `8765` | Dónde escucha `api.py` |
 | `STONEWAVE_API_TOKEN` | (vacío) | Si lo defines, la API exige `Authorization: Bearer <token>` |
@@ -264,7 +265,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `restore_memory` | Devuelve un recuerdo de la papelera a la biblioteca (por su `[papelera n]`) |
 | `empty_trash` | Borra de verdad lo de la papelera (uno por ID, o todo con `confirm=true`) |
 
-También hay una CLI: `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|setup|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
+También hay una CLI: `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|setup|sync|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
 
 ## Editar, borrar, importar y exportar
 
@@ -312,6 +313,24 @@ python mem_cli.py import backup.jsonl --no-dream   # sin sueño al terminar
 ```
 
 Al importar, cada línea pasa por `inject()` (lo que ya existe solo se refuerza, así que importar dos veces no duplica) y, si entraron recuerdos nuevos, se corre `dream()` en esos namespaces para clasificarlos y enlazarlos. Las líneas inválidas se reportan con su número y no detienen la importación. Si Ollama no responde 3 veces seguidas, se detiene (vuelve a correr el comando cuando esté arriba). El sótano no se exporta.
+
+### Usar la memoria en dos compus (`sync`)
+
+Si trabajas en dos equipos (casa y oficina), no pongas `memoria.db` en un repo ni en OneDrive/Dropbox: es un archivo binario que git no puede fusionar, y si dos equipos lo abren a la vez se puede corromper. En su lugar comparte un **`.jsonl`** (texto, una línea por recuerdo) dentro de un repo privado (por ejemplo el de tu bóveda de Obsidian):
+
+```bash
+git pull                                              # 1. trae lo último del repo
+python mem_cli.py sync C:\ruta\a\tu-repo\stonewave   # 2. une tu memoria con el archivo compartido
+git add . && git commit -m "sync memoria" && git push   # 3. sube el resultado
+```
+
+`sync` acepta una carpeta (usa el archivo `stonewave-memoria.jsonl` dentro) o la ruta de un `.jsonl`. También puedes definir `STONEWAVE_SYNC` y correr solo `python mem_cli.py sync`.
+
+Qué hace, en dos pasos: (1) **importa** lo que haya en el archivo (lo que ya existe no se duplica ni se refuerza, así que sincronizar muchas veces no infla la energía) y (2) **escribe** el archivo con la unión de todo, ordenado y con la energía redondeada a un decimal para que git casi no vea cambios sueltos. Los vectores no viajan en el archivo: cada equipo los recalcula con su propio Ollama.
+
+**Seguridad:** si el archivo trae líneas inválidas (por ejemplo marcas de conflicto de git `<<<<<<<`) o Ollama no responde al importar, `sync` **no escribe nada** y te avisa, para no borrar lo del otro equipo. Resuelve el conflicto y vuelve a correrlo.
+
+**Límite conocido:** lo que borres o corrijas en un equipo puede volver desde el otro, porque el archivo solo guarda lo que existe, no lo que se eliminó. Si borras algo, sincroniza en los dos equipos y bórralo en ambos.
 
 ### Traer la memoria de otra herramienta
 
@@ -510,6 +529,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Comando `doctor`: reporte de salud (BD, sótano, Ollama, último sueño) | Hecho |
 | Doctor solucionador: si hay un fallo grave imprime las soluciones sugeridas (comandos exactos) | Hecho |
 | Comando `setup`: revisa la instalación, descarga modelos (`--pull`) e imprime la config MCP con tus rutas | Hecho |
+| `sync`: compartir la memoria entre dos equipos con un `.jsonl` en un repo privado | Hecho |
 | Limpieza del repo: prototipos y scripts viejos movidos a `archive/v0.1/` | Hecho |
 | Probar con una memoria real grande (cientos de recuerdos) y reajustar umbrales si hace falta | Pendiente |
 | Ver si las piedras ayudan de verdad: hace falta un dataset más grande con preguntas de varios hechos | Parcial: con el dataset de 50 casos y ~13 recuerdos no hay diferencia (84 % vs 84 %); falta probar con una memoria grande |

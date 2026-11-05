@@ -229,6 +229,7 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_LLM_MODEL` | `tev1:0.8b` | Modelo de decisión (temas y contradicciones) |
 | `STONEWAVE_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
 | `STONEWAVE_STONES` | `5` | Piedras por consulta |
+| `STONEWAVE_RESULTS` | `3` | Máximo de recuerdos que devuelve una consulta |
 | `STONEWAVE_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (en las pruebas salió peor y más lento) |
 | `STONEWAVE_API_HOST` / `STONEWAVE_API_PORT` | `127.0.0.1` / `8765` | Dónde escucha `api.py` |
 | `STONEWAVE_API_TOKEN` | (vacío) | Si lo defines, la API exige `Authorization: Bearer <token>` |
@@ -408,6 +409,7 @@ python scripts/benchmark_stones.py                       # compara 1 piedra vs 5
 python scripts/benchmark_stones.py --stones 5            # solo 5 piedras
 python scripts/benchmark_stones.py --cases casos.jsonl   # tus propios casos
 python scripts/benchmark_stones.py --fake                # sin Ollama: solo prueba que el benchmark corre
+python scripts/benchmark_stones.py --shared              # todos los casos en UNA memoria compartida (corpus grande, más realista)
 python scripts/benchmark_stones.py --json salida.json    # guarda los resultados
 python scripts/benchmark_stones.py --min-pass 0.8        # código de salida 1 si acierta menos del 80 %
 ```
@@ -422,6 +424,8 @@ Formato de un caso (una línea JSON por caso en el `.jsonl`):
 ```
 
 `expected` son fragmentos que deben aparecer (sin importar mayúsculas ni acentos), `forbidden` los que no deben salir (por ejemplo un dato ya contradicho), `requires_llm` marca los casos que necesitan los modelos reales (se omiten con `--fake`) y `expect_empty` marca preguntas sin respuesta (pasan solo si no se devuelve nada). Un caso pasa si aparecen todos los `expected` y ningún `forbidden`.
+
+El benchmark muestra el avance por caso (`[12/100] 5 piedra(s) multi_03: OK 840 ms`). Si Ollama deja de responder a mitad de la corrida, se detiene con un aviso (código de salida 2) y muestra lo medido hasta ahí, en vez de quedarse reintentando horas.
 
 **Dataset grande:** `tests/membench_cases.jsonl` tiene **50 casos** (14 de un hecho, 14 de varios hechos, 10 contradicciones, 8 de sótano y 4 preguntas sin respuesta). Los casos con `"expect_empty": true` pasan solo si el `query` no devuelve nada (mide que no invente). Córrelo con:
 

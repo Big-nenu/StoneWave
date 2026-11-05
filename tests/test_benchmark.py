@@ -134,6 +134,32 @@ def test_main_fake_de_punta_a_punta():
     assert me.MIN_SIM == 0.18  # main restauro los umbrales reales
 
 
+def test_memoria_compartida():
+    cases = [{"id": "a", "category": "single", "question": "qué estudió Luis en la universidad", "expected": ["Lamar"],
+              "facts": ["Luis estudió ingeniería en computación en la universidad Lamar", "Luis trabaja en Neodata en Guadalajara", "Los gatos duermen mucho durante el día"]},
+             {"id": "b", "category": "contradiction", "requires_llm": True, "facts": ["x"], "question": "q", "expected": ["x"]}]
+    with fake_thresholds():
+        rs = bench.run_benchmark(cases, (1, 5), fake=True, shared=True)
+    assert len(rs) == 2 and all(r["shared"] and r["passed"] and r["memories"] > 8 for r in rs), rs  # la contradiccion no entra
+
+
+def test_se_detiene_si_ollama_deja_de_responder():
+    caso = {"id": "x", "background": False, "facts": ["a b c"], "question": "q", "expected": ["a"]}
+    old_run, old_up = bench.run_case, bench._ollama_up
+    bench.run_case = lambda c, **kw: {"id": c["id"], "category": "g", "stones": kw["stones"], "passed": False, "error": "ERROR: sin embedding"}
+    bench._ollama_up = lambda: False
+    try:
+        try:
+            bench.run_benchmark([caso, caso], (1,), fake=False)
+            assert False, "debio lanzar OllamaDown"
+        except bench.OllamaDown as ex:
+            assert len(ex.results) == 1, ex.results  # se detuvo en el primer fallo, no siguio con los demas
+        bench._ollama_up = lambda: True  # si Ollama sigue vivo, un fallo normal NO detiene el benchmark
+        assert len(bench.run_benchmark([caso, caso], (1,), fake=False)) == 2
+    finally:
+        bench.run_case, bench._ollama_up = old_run, old_up
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

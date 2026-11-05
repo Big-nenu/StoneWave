@@ -67,6 +67,7 @@ CACHE_REBUILD_BELOW = 64  # con menos recuerdos que esto, la cache se reconstruy
 
 # --- AJUSTES DE LA BÚSQUEDA POR ONDAS ---
 # Los umbrales estan calibrados para vectores centrados (ver tests/real_test.py)
+RESULTS = int(env_var("RESULTS", "3"))               # maximo de recuerdos que devuelve una consulta
 STONES = int(env_var("STONES", "5"))                 # piedras por consulta
 STONES_LLM = env_var("STONES_LLM", "false").lower() == "true"  # ángulos con LLM
 WEAK_MATCH = 0.40  # si la mejor coincidencia de la biblioteca es menor, tambien se busca en el sotano
@@ -629,7 +630,7 @@ class StoneWaveEngine:
         top_score = max(score.values())
         # Los valles (poco peso, nada que ver) se descartan
         cand = [f for f in sorted(score, key=score.get, reverse=True)
-                if score[f] >= 0.4 * top_score and best[f] >= MIN_SIM][:6]
+                if score[f] >= 0.4 * top_score and best[f] >= MIN_SIM][:max(6, RESULTS + 2)]
         if not cand:
             return []
         norm = {f: score[f] / top_score for f in cand}
@@ -661,7 +662,7 @@ class StoneWaveEngine:
             e = min(float(energy or 0), 1.0)
             ranked.append((sc * (0.5 + 0.5 * e), raw[f], f, e, content))
         ranked.sort(reverse=True)
-        return [(r[1], r[2], r[3], r[4]) for r in ranked[:3]]
+        return [(r[1], r[2], r[3], r[4]) for r in ranked[:RESULTS]]
 
     def _touch(self, results):
         now = time.time()

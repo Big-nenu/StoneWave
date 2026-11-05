@@ -15,6 +15,7 @@ Uso:
     python scripts/benchmark_stones.py --json salida.json   # guarda los resultados
     python scripts/benchmark_stones.py --min-pass 0.8       # codigo de salida 1 si pasa menos del 80 %
     python scripts/benchmark_stones.py --cases tests/membench_cases.jsonl --no-topics   # dataset grande (50 casos)
+    python scripts/benchmark_stones.py --cases tests/membench_cases.jsonl --no-topics --shared   # todos los casos en UNA sola memoria
 
 Formato de un caso (JSON, una linea por caso en el .jsonl):
     {"id": "multi_01", "category": "multi",
@@ -41,6 +42,8 @@ import tempfile
 import time
 import unicodedata
 import zlib
+
+import requests
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import mem_engine as me
@@ -162,8 +165,8 @@ def run_case(case, stones=5, fake=False, top_k=3, no_topics=False):
         if isinstance(res, str):
             returned, top = [], []
         else:
-            returned = [r[3] for r in res[:top_k]]
-            top = [(round(float(r[0]), 3), r[3]) for r in res[:top_k]]
+            returned = [r[3] for r in res[:me.RESULTS]]
+            top = [(round(float(r[0]), 3), r[3]) for r in res[:me.RESULTS]]
         verdict = evaluate(case["expected"], case.get("forbidden"), returned)
         if case.get("expect_empty"):  # pregunta sin respuesta: lo correcto es NO devolver nada (no inventar)
             verdict = {"passed": not returned, "coverage": 0.0 if returned else 1.0, "hits": [], "missed": [],
@@ -180,8 +183,111 @@ def run_case(case, stones=5, fake=False, top_k=3, no_topics=False):
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def run_benchmark(cases, stones_list=(1, 5), fake=False, no_topics=False):
-    return [run_case(c, stones=s, fake=fake, no_topics=no_topics) for s in stones_list for c in cases]
+def run_shared(cases, stones=5, fake=False, top_k=3, no_topics=False):
+    """Todos los casos en UNA sola memoria (decenas de recuerdos mezclados), como en el uso real.
+
+    Inyecta todo, sueña una vez y hace cada pregunta. Quedan fuera las contradicciones y el sotano
+    (sus recuerdos chocarian con los de otros casos, o necesitan envejecer).
+    """
+    eligible = [c for c in cases if c.get("category") not in ("contradiction", "basement") and not c.get("requires_llm")
+                and not any(isinstance(f, dict) and f.get("age_days") for f in c["facts"])]
+    folder = tempfile.mkdtemp()
+    engine = None
+    old_stones = me.STONES
+    out = []
+    try:
+        me.STONES = stones
+        engine = _make_engine(os.path.join(folder, "shared.db"), fake, no_topics)
+        for text in BACKGROUND:
+            engine.inject(text)
+        for c in eligible:
+            for f in (_norm_fact(x) for x in c["facts"]):
+                engine.inject(f["text"], pinned=f["pinned"])
+        with sqlite3.connect(engine.db_path) as conn:
+            n_mem = conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+        engine.dream()
+        for c in eligible:
+            base = {"id": c["id"], "category": c.get("category", "general"), "stones": stones, "question": c["question"],
+                    "expected": c["expected"], "shared": True, "memories": n_mem}
+            try:
+                t = time.perf_counter()
+                res = engine.query(c["question"])
+                ms = (time.perf_counter() - t) * 1000
+                if isinstance(res, str):
+                    returned, top = [], []
+                else:
+                    returned = [r[3] for r in res[:me.RESULTS]]
+                    top = [(round(float(r[0]), 3), r[3]) for r in res[:me.RESULTS]]
+                verdict = evaluate(c["expected"], c.get("forbidden"), returned)
+                if c.get("expect_empty"):
+                    verdict = {"passed": not returned, "coverage": 0.0 if returned else 1.0, "hits": [], "missed": [],
+                               "forbidden_found": [returned[0][:60]] if returned else []}
+                out.append({**base, "skipped": False, **verdict, "top": top, "ms": ms, "note": res if isinstance(res, str) else ""})
+            except Exception as ex:
+                out.append({**base, "skipped": False, "passed": False, "error": f"{type(ex).__name__}: {ex}"})
+    except Exception as ex:
+        out.append({"id": "shared", "category": "general", "stones": stones, "question": "", "expected": [], "skipped": False,
+                    "passed": False, "error": f"{type(ex).__name__}: {ex}"})
+    finally:
+        me.STONES = old_stones
+        if engine:
+            engine.close()
+        gc.collect()
+        shutil.rmtree(folder, ignore_errors=True)
+    return out
+
+
+class OllamaDown(Exception):
+    """Ollama dejo de responder a mitad del benchmark. 'results' trae lo que alcanzo a medirse."""
+    def __init__(self, results):
+        super().__init__("Ollama dejo de responder")
+        self.results = results
+
+
+def _ollama_up():
+    try:
+        return requests.get("http://localhost:11434/api/tags", timeout=3).status_code == 200
+    except Exception:
+        return False
+
+
+def _failed_by_ollama(r, fake):
+    """True si el caso fallo por un error (no por una respuesta mala) y Ollama ya no contesta."""
+    if fake or r.get("skipped") or not (r.get("error") or "No embedding" in str(r.get("note", ""))):
+        return False
+    return not _ollama_up()
+
+
+def _progress(n, total, stones, r):
+    estado = "omitido" if r.get("skipped") else ("OK" if r.get("passed") else "FALLA")
+    ms = f" {r['ms']:.0f} ms" if "ms" in r else ""
+    print(f"[{n}/{total}] {stones} piedra(s) {r['id']}: {estado}{ms}", flush=True)
+
+
+def run_benchmark(cases, stones_list=(1, 5), fake=False, no_topics=False, shared=False):
+    """Corre todos los casos mostrando el avance. Si Ollama deja de responder, lanza OllamaDown con lo medido."""
+    results, n = [], 0
+    if shared:
+        total = len(cases) * len(stones_list)
+        for s in stones_list:
+            print(f"[{s} piedra(s)] modo compartido: guardando y sonando (puede tardar)...", flush=True)
+            for r in run_shared(cases, stones=s, fake=fake, no_topics=no_topics):
+                n += 1
+                results.append(r)
+                _progress(n, total, s, r)
+                if _failed_by_ollama(r, fake):
+                    raise OllamaDown(results)
+        return results
+    total = len(cases) * len(stones_list)
+    for s in stones_list:
+        for c in cases:
+            n += 1
+            r = run_case(c, stones=s, fake=fake, no_topics=no_topics)
+            results.append(r)
+            _progress(n, total, s, r)
+            if _failed_by_ollama(r, fake):
+                raise OllamaDown(results)
+    return results
 
 
 # ----------------------------------------------------------------------
@@ -249,6 +355,9 @@ def main():
     ap.add_argument("--fake", action="store_true", help="sin Ollama: embeddings falsos, solo valida que el benchmark corre")
     ap.add_argument("--no-background", action="store_true", help="no agregar recuerdos de relleno")
     ap.add_argument("--no-topics", action="store_true", help="no clasificar temas en el sueño (no afecta a la consulta; hace la corrida mucho mas rapida)")
+    ap.add_argument("--shared", action="store_true", help="todos los casos en UNA sola memoria (mas realista; omite contradicciones y sotano)")
+    ap.add_argument("--set", action="append", default=[], metavar="NOMBRE=VALOR",
+                    help="cambia una constante de mem_engine solo durante la corrida (ej. --set MIN_SIM=0.3 --set RESULTS=5); se puede repetir")
     ap.add_argument("--json", help="guarda los resultados en este archivo")
     ap.add_argument("--min-pass", type=float, default=0.0, help="si la tasa de acierto (0 a 1) con el mayor numero de piedras es menor, sale con codigo 1")
     args = ap.parse_args()
@@ -259,7 +368,16 @@ def main():
         for c in cases:
             c["background"] = False
 
-    saved = {k: getattr(me, k) for k in FAKE_THRESHOLDS}
+    overrides = {}
+    for item in args.set:
+        name, _, raw = item.partition("=")
+        if not hasattr(me, name) or not raw:
+            print(f"--set {item}: no existe esa constante en mem_engine (formato NOMBRE=VALOR)", file=sys.stderr)
+            return 2
+        overrides[name] = type(getattr(me, name))(raw)
+    saved = {k: getattr(me, k) for k in list(FAKE_THRESHOLDS) + list(overrides)}
+    for k, v in overrides.items():
+        setattr(me, k, v)
     if args.fake:
         for k, v in FAKE_THRESHOLDS.items():
             setattr(me, k, v)
@@ -272,8 +390,13 @@ def main():
             print("No se pudo obtener un embedding de Ollama. Revisa con:  python mem_cli.py doctor   (o usa --fake)", file=sys.stderr)
             return 2
     print(f"{len(cases)} caso(s) x piedras {stones_list} | corpus: {'sin relleno' if args.no_background else f'{len(BACKGROUND)} recuerdos de relleno'}")
+    aborted = False
     try:
-        results = run_benchmark(cases, stones_list, fake=args.fake, no_topics=args.no_topics)
+        results = run_benchmark(cases, stones_list, fake=args.fake, no_topics=args.no_topics, shared=args.shared)
+    except OllamaDown as ex:
+        results, aborted = ex.results, True
+        print("\nOLLAMA DEJO DE RESPONDER: se detuvo el benchmark. Revisa con:  python mem_cli.py doctor\n"
+              "Abajo va lo medido hasta ahora (incompleto, no lo uses para comparar).", file=sys.stderr)
     finally:
         for k, v in saved.items():
             setattr(me, k, v)
@@ -283,6 +406,8 @@ def main():
             json.dump(results, f, ensure_ascii=False, indent=2)
         print(f"\nResultados guardados en {args.json}")
     best = summary.get(max(stones_list))
+    if aborted:
+        return 2
     return 1 if (best is not None and best < args.min_pass) else 0
 
 

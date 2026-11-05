@@ -230,6 +230,7 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
 | `STONEWAVE_STONES` | `5` | Piedras por consulta |
 | `STONEWAVE_RESULTS` | `3` | Máximo de recuerdos que devuelve una consulta |
+| `STONEWAVE_CONFLICT_SIM` | `0.40` | Similitud mínima para que el sueño revise si dos recuerdos se contradicen (más bajo = revisa más pares, más lento) |
 | `STONEWAVE_STONES_LLM` | `false` | Si es `true`, un modelo inventa los ángulos de las piedras (en las pruebas salió peor y más lento) |
 | `STONEWAVE_API_HOST` / `STONEWAVE_API_PORT` | `127.0.0.1` / `8765` | Dónde escucha `api.py` |
 | `STONEWAVE_API_TOKEN` | (vacío) | Si lo defines, la API exige `Authorization: Bearer <token>` |

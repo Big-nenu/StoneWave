@@ -116,7 +116,7 @@ Modelos de Ollama:
 
 ```bash
 ollama pull embeddinggemma-2:270m   # embeddings
-ollama pull tev1:0.8b               # clasificación de temas y contradicciones
+ollama pull d1:3b                   # clasificación de temas y contradicciones
 ollama pull qwen2.5:0.5b            # fusión de recuerdos y reflexión
 ```
 
@@ -228,7 +228,7 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_DB` | `~/.stonewave/memoria.db` | Ruta **absoluta** de la base de datos |
 | `STONEWAVE_NAMESPACE` | `default` | Etiqueta para separar memorias (ej. `trabajo`, `personal`). No es una ruta |
 | `STONEWAVE_EMBED_MODEL` | `embeddinggemma-2:270m` | Modelo de embeddings |
-| `STONEWAVE_LLM_MODEL` | `tev1:0.8b` | Modelo de decisión (temas y contradicciones) |
+| `STONEWAVE_LLM_MODEL` | `d1:3b` | Modelo de decisión (temas y contradicciones) |
 | `STONEWAVE_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
 | `STONEWAVE_STONES` | `5` | Piedras por consulta |
 | `STONEWAVE_RESULTS` | `3` | Máximo de recuerdos que devuelve una consulta |
@@ -366,7 +366,7 @@ Es de **solo lectura** (no abre el motor ni modifica nada) e imprime un reporte 
 
 - **Base de datos:** ruta, conexión, tamaño de `memoria.db` y chequeo de integridad.
 - **Recuerdos:** activos vs. en el sótano (con el motivo: desuso o contradicción), fijos, enlaces y papelera.
-- **Ollama:** si responde, y si los modelos de embeddings (`embeddinggemma-2:270m`) y de decisión (`tev1:0.8b`) están instalados y contestan de verdad, con su tiempo de respuesta.
+- **Ollama:** si responde, y si los modelos de embeddings (`embeddinggemma-2:270m`) y de decisión (`d1:3b`) están instalados y contestan de verdad, con su tiempo de respuesta.
 - **Sueño:** fecha y hora del último ciclo (y si el automático está activado).
 - **Entorno:** si numpy está instalado.
 
@@ -385,7 +385,7 @@ Recuerdos (namespace 'default')
 
 Ollama (local)
   [OK] Embeddings: embeddinggemma-2:270m vectores de 768 dimensiones (2337 ms)
-  [OK] Decision: tev1:0.8b responde (1649 ms)
+  [OK] Decision: d1:3b responde (1649 ms)
   ...
 ```
 
@@ -481,7 +481,7 @@ python scripts/benchmark_stones.py --cases tests/membench_cases.jsonl --no-topic
 Lo que muestran los fallos (los mismos con 1 y 5 piedras):
 
 - **Las 5 piedras no ayudaron en este dataset:** igual acierto, el doble de tiempo (solo mejoraron la cobertura en un caso de varios hechos). Con corpus de ~13 recuerdos no hay margen; falta probar con memorias más grandes antes de decidir.
-- **Contradicciones (3 fallos):** dos casos (`contradiccion_03`, `_04`) no se detectan porque la similitud entre los dos recuerdos (0.32) queda bajo `CONFLICT_SIM` (0.40) y el sueño ni se los muestra al modelo, que sí los marcaría como contradictorios. El tercero (`_05`) llega justo al umbral pero `tev` se contradice según el orden en que ve las frases, y se exige que coincida en ambos. **Probado y descartado:** bajar `CONFLICT_SIM` empeora el total (5 piedras, 50 casos): 0.40 → 42/50, 0.35 → 38/50, 0.30 → 38/50. Con 0.30 las contradicciones suben de 7/10 a 9/10, pero 5 casos de varios hechos se rompen, porque `tev` marca como contradictorios datos que solo se complementan (ej. "doctor Vega" y "dentista Salinas") y el sueño archiva uno. Se queda en 0.40; el cuello de botella es la precisión de `tev` en esos pares, no el umbral.
+- **Contradicciones (3 fallos):** dos casos (`contradiccion_03`, `_04`) no se detectan porque la similitud entre los dos recuerdos (0.32) queda bajo `CONFLICT_SIM` (0.40) y el sueño ni se los muestra al modelo, que sí los marcaría como contradictorios. El tercero (`_05`) llega justo al umbral pero `tev` se contradice según el orden en que ve las frases, y se exige que coincida en ambos. **Probado y descartado:** bajar `CONFLICT_SIM` empeora el total (5 piedras, 50 casos): 0.40 → 42/50, 0.35 → 38/50, 0.30 → 38/50. Con 0.30 las contradicciones suben de 7/10 a 9/10, pero 5 casos de varios hechos se rompen, porque `tev` marca como contradictorios datos que solo se complementan (ej. "doctor Vega" y "dentista Salinas") y el sueño archiva uno. Se queda en 0.40; el cuello de botella es la precisión de `tev` en esos pares, no el umbral. **Cambio de modelo (6-nov-2026):** el modelo de decisión por defecto pasó de `tev1:0.8b` a `d1:3b` (Liquid AI). Con `python tests/compare_llm.py` (15 pares, ambos órdenes) `tev` marcó como contradictorios 7 de 10 pares que no lo eran y `d1` solo 2 (casos ambiguos como "32 GB vs 16 GB"); ninguno perdió contradicciones reales y la velocidad es parecida (~60 ms). En el MemBench de 50 casos con `d1` salió igual: **44/50 (88 %)**, contradicciones 7/10 (los fallos son los del umbral, no del modelo), así que no mejora ni empeora ese benchmark; la ventaja está en los falsos positivos. Probado y descartado: una tercera opción `insuficiente` con "no supongas" deja en 0 los falsos positivos pero pierde 3 de 5 contradicciones reales. Para volver al anterior: `STONEWAVE_LLM_MODEL=tev1:0.8b`.
 - **Sótano (2 fallos): arreglado.** Si había un recuerdo activo parecido (ej. 'mi jefa **actual**' vs. 'mi **antigua** jefa') la biblioteca ganaba con coincidencia fuerte y el archivado no salía. Ahora una pregunta con pista de pasado ('antigua', 'anterior', 'antes'...) también busca en el sótano.
 - **Sin respuesta (1 fallo):** una pregunta cercana ("¿cómo se llama mi dentista?" con otros doctores guardados) devuelve el recuerdo parecido en vez de nada.
 - **Varios hechos (2 fallos):** un recuerdo esperado queda fuera del top-3 (`multi_07`, `multi_08`).

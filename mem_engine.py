@@ -46,7 +46,7 @@ OLLAMA_EMBED_URL = "http://localhost:11434/api/embed"
 OLLAMA_GEN_URL = "http://localhost:11434/api/generate"
 OLLAMA_SYSTEMONE_URL = "http://localhost:11434/v1/systemone"
 EMBEDDING_MODEL = env_var("EMBED_MODEL", "embeddinggemma-2:270m")
-LLM_MODEL = env_var("LLM_MODEL", "tev1:0.8b")
+LLM_MODEL = env_var("LLM_MODEL", "d1:3b")  # antes tev1:0.8b (d1 archiva de menos por error; ver tests/compare_llm.py)
 SYNTHESIS_MODEL = env_var("SYNTHESIS_MODEL", "qwen2.5:0.5b")
 
 

@@ -37,6 +37,12 @@ CRIT3 = {
     "complementario": "Ambas frases pueden ser ciertas a la vez",
     "insuficiente": "No se sabe si hablan del mismo objeto, persona o momento; no se puede asegurar que se contradigan",
 }
+CRIT4 = {
+    "contradictorio": "Hablan del mismo tema o dato y dan valores incompatibles, o la Frase 2 dice que la Frase 1 ya no es cierta",
+    "complementario": "Aportan datos distintos que pueden ser ciertos a la vez",
+    "insuficiente": "Podrian referirse a objetos, personas o momentos distintos y no hay forma de saberlo",
+}
+INSTR4 = "¿Que relacion hay entre la Frase 1 y la Frase 2? Elige insuficiente solo si de verdad podrian hablar de cosas distintas."
 INSTR2 = "Decide si la Frase 2 anula o contradice a la Frase 1, o si ambas pueden ser ciertas a la vez."
 INSTR3 = ("Usa solo la informacion explicita. No supongas que ambas frases hablan del mismo objeto, persona o momento. "
           "¿Que relacion esta demostrada entre la Frase 1 y la Frase 2?")
@@ -69,7 +75,7 @@ def run():
         pass
     for model in MODELS:
         ask(model, "hola", "adios", CRIT2, INSTR2)  # calienta (carga el modelo)
-        for label, crit, instr in (("2 opciones (como hoy)", CRIT2, INSTR2), ("3 opciones + 'no supongas'", CRIT3, INSTR3)):
+        for label, crit, instr in (("2 opciones (como hoy)", CRIT2, INSTR2), ("3 opciones + 'no supongas'", CRIT3, INSTR3), ("3 opciones SUAVE", CRIT4, INSTR4)):
             print(f"\n=== {model} | {label} ===")
             ok = fp = fn = 0
             times = []

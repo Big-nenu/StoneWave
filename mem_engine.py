@@ -4,7 +4,6 @@ import sys
 import shutil
 import sqlite3
 import json
-import requests
 import math
 import time
 import unicodedata
@@ -18,14 +17,17 @@ except ImportError:  # sin numpy funciona igual, solo mas lento
     np = None
 
 # --- CONFIGURACIÓN DINÁMICA DE RUTAS ---
+# Todo lo que habla con un modelo vive en llm.py. Estos nombres se re-exportan aqui por compatibilidad
+# (doctor.py, setup_wizard.py y las pruebas los leen como mem_engine.EMBEDDING_MODEL, etc.).
+from llm import (  # noqa: E402,F401
+    env_var, Embedder, Generator, Decider,
+    OLLAMA_URL, OLLAMA_EMBED_URL, OLLAMA_GEN_URL, OLLAMA_SYSTEMONE_URL,
+    EMBEDDING_MODEL, LLM_MODEL, SYNTHESIS_MODEL, CONCLUSION_MODEL, QUERY_PREFIX, DOC_PREFIX,
+)
+
 USER_HOME = Path.home()
 DEFAULT_MEM_FOLDER = USER_HOME / ".stonewave"
 OLD_MEM_FOLDER = USER_HOME / ".memholografic"  # nombre anterior del proyecto
-
-
-def env_var(name, default=None):
-    """Lee STONEWAVE_<name>; si no existe, usa el nombre anterior MEMHOLOGRAFIC_<name>."""
-    return os.getenv("STONEWAVE_" + name, os.getenv("MEMHOLOGRAFIC_" + name, default))
 
 
 def _default_db_path():
@@ -41,28 +43,6 @@ def _default_db_path():
             return str(old)
     return str(new)
 
-OLLAMA_URL = "http://localhost:11434/api/embeddings"
-OLLAMA_EMBED_URL = "http://localhost:11434/api/embed"
-OLLAMA_GEN_URL = "http://localhost:11434/api/generate"
-OLLAMA_SYSTEMONE_URL = "http://localhost:11434/v1/systemone"
-EMBEDDING_MODEL = env_var("EMBED_MODEL", "embeddinggemma-2:270m")
-LLM_MODEL = env_var("LLM_MODEL", "d1:3b")  # antes tev1:0.8b (d1 archiva de menos por error; ver tests/compare_llm.py)
-SYNTHESIS_MODEL = env_var("SYNTHESIS_MODEL", "qwen2.5:0.5b")
-
-
-def _default_prefixes(model):
-    """Los modelos de embeddings funcionan mucho mejor si la pregunta y el documento llevan su prefijo."""
-    m = model.lower()
-    if m.startswith("embeddinggemma"):
-        return "task: search result | query: ", "title: none | text: "
-    if m.startswith("nomic-embed"):
-        return "search_query: ", "search_document: "
-    return "", ""
-
-
-_QP, _DP = _default_prefixes(EMBEDDING_MODEL)
-QUERY_PREFIX = env_var("QUERY_PREFIX", _QP)
-DOC_PREFIX = env_var("DOC_PREFIX", _DP)
 CENTER_PRIOR = 2  # con pocos recuerdos el centrado se suaviza (media * n / (n + 2))
 CACHE_REBUILD_BELOW = 64  # con menos recuerdos que esto, la cache se reconstruye al guardar (la media cambia mucho)
 
@@ -85,7 +65,6 @@ BACKUP_KEEP_DAYS = int(env_var("BACKUP_DAYS", "7"))  # dias de respaldos diarios
 BACKUP_NAME = re.compile(r"^(?P<stem>.+)-(?P<day>\d{4}-\d{2}-\d{2})\.db$")
 ANGLE_WEIGHT = 0.5     # peso de las piedras-angulo frente a la pregunta completa
 CONCLUSIONS_ON = env_var("CONCLUSIONS", "true").lower() == "true"  # el sueño saca conclusiones (hipotesis) de los recuerdos
-CONCLUSION_MODEL = env_var("CONCLUSION_MODEL", SYNTHESIS_MODEL)  # modelo generativo que propone las conclusiones
 CONCLUSION_GROUPS = 8        # grupos de recuerdos que se razonan por sueño
 CONCLUSION_GROUP_SIZE = 4    # recuerdos por grupo: el pendiente + sus vecinos mas parecidos
 CONCLUSION_MAX_CHECKS = 20   # revisiones de respaldo (modelo de decision) por sueño al pesar las hipotesis
@@ -110,7 +89,11 @@ CLASSIFICATION_TOPICS = [
 ]
 
 class StoneWaveEngine:
-    def __init__(self, db_path=None):
+    def __init__(self, db_path=None, embedder=None, generator=None, decider=None):
+        """embedder / generator / decider: las piezas que hablan con los modelos (ver llm.py). Por defecto, las de Ollama."""
+        self.embedder = embedder or Embedder()
+        self.generator = generator or Generator()
+        self.decider = decider or Decider()
         self.db_path = db_path if db_path else (env_var("DB") or _default_db_path())
         self._ensure_db_folder()
         self._init_db()
@@ -179,7 +162,7 @@ class StoneWaveEngine:
 
     def _ensure_embedding_scheme(self):
         """Si los vectores guardados se hicieron con otro modelo o prefijos, los recalcula (con respaldo)."""
-        scheme = f"{EMBEDDING_MODEL}|{QUERY_PREFIX}|{DOC_PREFIX}"
+        scheme = self.embedder.scheme
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute("SELECT value FROM meta WHERE key='embed_scheme'").fetchone()
             if row and row[0] == scheme:
@@ -283,51 +266,17 @@ class StoneWaveEngine:
     # ------------------------------------------------------------------
     # Embeddings
     # ------------------------------------------------------------------
-    def _embed_raw(self, text, retries=3):
-        for attempt in range(retries):
-            try:
-                r = requests.post(OLLAMA_URL, json={"model": EMBEDDING_MODEL, "prompt": text}, timeout=10)
-                if r.status_code == 200:
-                    emb = r.json().get("embedding")
-                    if emb: return emb
-                r = requests.post(OLLAMA_EMBED_URL, json={"model": EMBEDDING_MODEL, "input": text}, timeout=10)
-                if r.status_code == 200:
-                    res = r.json()
-                    emb_list = res.get("embeddings")
-                    if isinstance(emb_list, list) and len(emb_list) > 0:
-                        return emb_list[0]
-                    return res.get("embedding")
-            except Exception:
-                time.sleep(1)
-        return None
-
     def get_embedding(self, text, retries=3):
         """Embedding de un DOCUMENTO (un recuerdo)."""
-        return self._embed_raw(DOC_PREFIX + text, retries)
+        return self.embedder.doc(text, retries)
 
     def get_embeddings(self, texts):
         """Embeddings de PREGUNTAS (las piedras), en una sola llamada. Si falla, una por una."""
-        try:
-            r = requests.post(OLLAMA_EMBED_URL, json={"model": EMBEDDING_MODEL, "input": [QUERY_PREFIX + t for t in texts]}, timeout=30)
-            if r.status_code == 200:
-                embs = r.json().get("embeddings")
-                if isinstance(embs, list) and len(embs) == len(texts) and all(embs):
-                    return embs
-        except Exception:
-            pass
-        return [self._embed_raw(QUERY_PREFIX + t) for t in texts]
+        return self.embedder.queries(texts)
 
     def embed_docs(self, texts):
         """Embeddings de documentos en lote (para recalcular la memoria). Sin reintentos largos."""
-        try:
-            r = requests.post(OLLAMA_EMBED_URL, json={"model": EMBEDDING_MODEL, "input": [DOC_PREFIX + t for t in texts]}, timeout=120)
-            if r.status_code == 200:
-                embs = r.json().get("embeddings")
-                if isinstance(embs, list) and len(embs) == len(texts) and all(embs):
-                    return embs
-        except Exception:
-            pass
-        return [None] * len(texts)
+        return self.embedder.docs(texts)
 
     def calc_sim(self, v1, v2):
         if v1 is None or v2 is None or len(v1) == 0 or len(v2) == 0: return 0.0
@@ -465,32 +414,16 @@ class StoneWaveEngine:
     # Modelos de Ollama
     # ------------------------------------------------------------------
     def classify_topics(self, text):
-        try:
-            criteria = {topic: f"El texto trata sobre {topic}" for topic in CLASSIFICATION_TOPICS}
-            payload = {
-                "model": LLM_MODEL,
-                "state": text,
-                "questions": {
-                    "temas": {
-                        "type": "choice",
-                        "instructions": "Selecciona el tema que mejor se aplique a este texto.",
-                        "criteria": criteria
-                    }
-                }
-            }
-            r = requests.post(OLLAMA_SYSTEMONE_URL, json=payload, timeout=30)
-            if r.status_code == 200:
-                data = r.json()
-                answers = data.get("answers", {})
-                temas_res = answers.get("temas", {})
-                choice = temas_res.get("choice", "")
-                if isinstance(choice, str) and choice in CLASSIFICATION_TOPICS:
-                    return [choice]
-                picks = temas_res.get("picks", [])
-                if isinstance(picks, list):
-                    return [p for p in picks if p in CLASSIFICATION_TOPICS]
-        except Exception:
-            pass
+        criteria = {topic: f"El texto trata sobre {topic}" for topic in CLASSIFICATION_TOPICS}
+        ans = self.decider.ask(text, "temas", {"type": "choice", "instructions": "Selecciona el tema que mejor se aplique a este texto.",
+                                               "criteria": criteria})
+        if ans:
+            choice = ans.get("choice", "")
+            if isinstance(choice, str) and choice in CLASSIFICATION_TOPICS:
+                return [choice]
+            picks = ans.get("picks", [])
+            if isinstance(picks, list):
+                return [p for p in picks if p in CLASSIFICATION_TOPICS]
         return []
 
     def _store_topics(self, cursor, fact_id, topics):
@@ -501,30 +434,13 @@ class StoneWaveEngine:
                 cursor.execute("INSERT OR IGNORE INTO fact_topics (fact_id, topic_id) VALUES (?, ?)", (fact_id, row[0]))
 
     def _ask_llm_conflict(self, t1, t2):
-        # tev1 es un modelo de "decision": solo funciona con /v1/systemone (no con /api/generate)
-        try:
-            payload = {
-                "model": LLM_MODEL,
-                "state": f"Frase 1: {t1}\nFrase 2: {t2}",
-                "questions": {
-                    "relacion": {
-                        "type": "choice",
-                        "instructions": "Decide si la Frase 2 anula o contradice a la Frase 1, o si ambas pueden ser ciertas a la vez.",
-                        "criteria": {
-                            "contradictorio": "La Frase 2 contradice o invalida la Frase 1",
-                            "complementario": "Ambas frases pueden coexistir o se complementan"
-                        }
-                    }
-                }
-            }
-            r = requests.post(OLLAMA_SYSTEMONE_URL, json=payload, timeout=30)
-            if r.status_code == 200:
-                choice = r.json().get("answers", {}).get("relacion", {}).get("choice", "")
-                if choice == "contradictorio":
-                    return "CONTRADICTORIO"
-        except Exception:
-            pass
-        return "COMPLEMENTARIO"
+        # los modelos de decision (tev1, d1, d3) no escriben texto: eligen una opcion
+        choice = self.decider.choose(
+            f"Frase 1: {t1}\nFrase 2: {t2}",
+            "Decide si la Frase 2 anula o contradice a la Frase 1, o si ambas pueden ser ciertas a la vez.",
+            {"contradictorio": "La Frase 2 contradice o invalida la Frase 1",
+             "complementario": "Ambas frases pueden coexistir o se complementan"})
+        return "CONTRADICTORIO" if choice == "contradictorio" else "COMPLEMENTARIO"
 
     def _ask_llm_reflection(self, facts_list):
         facts_str = "\n".join([f"- {f}" for f in facts_list])
@@ -535,13 +451,8 @@ class StoneWaveEngine:
             f"busca una conexión oculta, una analogía o una pregunta filosófica que una estos temas. "
             f"La respuesta debe ser una sola frase corta que empiece con 'Intuición: '."
         )
-        try:
-            r = requests.post(OLLAMA_GEN_URL, json={"model": SYNTHESIS_MODEL, "prompt": prompt, "stream": False, "think": False}, timeout=30)
-            if r.status_code == 200:
-                return r.json().get("response", "").strip()
-        except:
-            pass
-        return None
+        text = self.generator.generate(prompt, timeout=30)
+        return text.strip() if text else None
 
     # ------------------------------------------------------------------
     # Guardar
@@ -591,14 +502,11 @@ class StoneWaveEngine:
     def _angles_llm(self, text):
         prompt = (f"Pregunta: {text}\nEscribe {STONES - 1} búsquedas cortas (2 a 4 palabras) que cubran "
                   f"distintos ángulos de la pregunta. Una por línea, sin números ni explicaciones.")
-        try:
-            r = requests.post(OLLAMA_GEN_URL, json={"model": SYNTHESIS_MODEL, "prompt": prompt, "stream": False, "think": False}, timeout=20)
-            if r.status_code == 200:
-                lines = [l.strip(" -*•0123456789.\t") for l in r.json().get("response", "").splitlines()]
-                return [l for l in lines if l][:STONES - 1]
-        except Exception:
-            pass
-        return []
+        out = self.generator.generate(prompt, timeout=20)
+        if not out:
+            return []
+        lines = [l.strip(" -*•0123456789.\t") for l in out.splitlines()]
+        return [l for l in lines if l][:STONES - 1]
 
     def _make_stones(self, text):
         """La pregunta es la primera piedra; las demás son ángulos de la pregunta."""
@@ -1226,44 +1134,23 @@ class StoneWaveEngine:
             "un hábito o una forma de trabajar o aprender. No repitas un recuerdo tal cual y no inventes nada que no esté respaldado. "
             "Si no hay una conclusión clara, responde exactamente: NINGUNA"
         )
-        try:
-            r = requests.post(OLLAMA_GEN_URL, json={"model": CONCLUSION_MODEL, "prompt": prompt, "stream": False, "think": False}, timeout=60)
-            if r.status_code != 200:
-                return None
-            text = r.json().get("response", "").strip()
-        except Exception:
+        text = self.generator.generate(prompt, timeout=60, model=CONCLUSION_MODEL)
+        if text is None:
             return None
-        line = next((l.strip(" -*•\t\"'") for l in text.splitlines() if l.strip()), "")
+        line = next((l.strip(" -*•\t\"'") for l in text.strip().splitlines() if l.strip()), "")
         if not line or line.upper().startswith("NINGUNA") or len(line) < 15:
             return ""
         return line[:240]
 
     def _ask_llm_support(self, fact, conclusion):
         """Modelo de decision: ¿el recuerdo respalda la conclusion? Devuelve 'RESPALDA', 'CONTRADICE' o 'NEUTRO' (si no responde, 'NEUTRO')."""
-        try:
-            payload = {
-                "model": LLM_MODEL,
-                "state": f"Recuerdo: {fact}\nConclusión: {conclusion}",
-                "questions": {
-                    "relacion": {
-                        "type": "choice",
-                        "instructions": "Decide si el Recuerdo respalda la Conclusión, la contradice, o no dice nada claro sobre ella.",
-                        "criteria": {
-                            "respalda": "El Recuerdo es evidencia a favor de la Conclusión",
-                            "contradice": "El Recuerdo va en contra de la Conclusión",
-                            "neutro": "El Recuerdo no dice nada claro sobre la Conclusión"
-                        }
-                    }
-                }
-            }
-            r = requests.post(OLLAMA_SYSTEMONE_URL, json=payload, timeout=30)
-            if r.status_code == 200:
-                choice = r.json().get("answers", {}).get("relacion", {}).get("choice", "")
-                if choice in ("respalda", "contradice"):
-                    return choice.upper()
-        except Exception:
-            pass
-        return "NEUTRO"
+        choice = self.decider.choose(
+            f"Recuerdo: {fact}\nConclusión: {conclusion}",
+            "Decide si el Recuerdo respalda la Conclusión, la contradice, o no dice nada claro sobre ella.",
+            {"respalda": "El Recuerdo es evidencia a favor de la Conclusión",
+             "contradice": "El Recuerdo va en contra de la Conclusión",
+             "neutro": "El Recuerdo no dice nada claro sobre la Conclusión"})
+        return choice.upper() if choice in ("respalda", "contradice") else "NEUTRO"
 
     def _conclusion_twin(self, vec, text, namespace):
         """ID de una conclusion ya guardada que sea igual o casi igual a esta, o None."""

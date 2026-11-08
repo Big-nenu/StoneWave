@@ -1035,6 +1035,105 @@ def test_query_conclusions_encuentra_la_parecida_y_no_toca_nada():
     assert e.query_conclusions("aprende mejor haciendo ejercicios") == []
 
 
+class _FakeEmbedder:
+    scheme = "fake"
+
+    def doc(self, text, retries=3):
+        return fake_embedding(text)
+
+    def queries(self, texts):
+        return [fake_embedding(t) for t in texts]
+
+    def docs(self, texts):
+        return [fake_embedding(t) for t in texts]
+
+
+class _FakeGenerator:
+    def __init__(self, text=CONC):
+        self.text, self.calls = text, []
+
+    def generate(self, prompt, timeout=30, model=None):
+        self.calls.append(model)
+        return self.text
+
+
+class _FakeDecider:
+    def ask(self, state, name, question, timeout=30):
+        return {"choice": "otro"} if name == "temas" else {}
+
+    def choose(self, state, instructions, criteria, name="relacion", timeout=30):
+        return "respalda" if "respalda" in criteria else "complementario"
+
+
+def test_llm_el_motor_usa_las_piezas_inyectadas_y_no_hace_http():
+    import llm
+    def sin_red(*a, **k):
+        raise AssertionError("el motor no debe hablar con Ollama por su cuenta")
+    old = llm.requests.post
+    llm.requests.post = sin_red
+    try:
+        gen = _FakeGenerator()
+        e = MemHolograficEngine(db_path=os.path.join(tempfile.mkdtemp(), "t.db"),
+                                embedder=_FakeEmbedder(), generator=gen, decider=_FakeDecider())
+        e.inject(F1)
+        e.inject(F2)
+        out = e.dream()
+        assert "1 nuevas" in out, out
+        assert gen.calls == [mem_engine.CONCLUSION_MODEL], gen.calls  # las conclusiones usan su propio modelo
+        res = e.query("aprende mejor haciendo ejercicios")
+        assert isinstance(res, list) and res[0][3] in (F1, F2), res
+        assert len(rows(e.db_path, "SELECT * FROM fact_topics")) == 2  # el decisor clasifico los temas
+        assert [r[0] for r in rows(e.db_path, "SELECT kind FROM links")] == ["similar"]  # y decidio que no se contradicen
+    finally:
+        llm.requests.post = old
+
+
+def test_llm_las_piezas_nunca_lanzan_y_validan_lo_que_responde():
+    import llm
+
+    class R:
+        def __init__(self, status=200, data=None):
+            self.status_code, self._d = status, data or {}
+
+        def json(self):
+            return self._d
+
+    old_post, old_sleep = llm.requests.post, llm.time.sleep
+    llm.time.sleep = lambda s: None
+    try:
+        d, crit = llm.Decider(model="x"), {"respalda": "a", "contradice": "b"}
+        llm.requests.post = lambda url, **kw: R(200, {"answers": {"relacion": {"choice": "respalda"}}})
+        assert d.choose("s", "i", crit) == "respalda"
+        llm.requests.post = lambda url, **kw: R(200, {"answers": {"relacion": {"choice": "inventada"}}})
+        assert d.choose("s", "i", crit) == ""  # una opcion que no existe no vale
+
+        def apagado(url, **kw):
+            raise ConnectionError("Ollama apagado")
+        llm.requests.post = apagado
+        assert d.ask("s", "relacion", {}) is None and d.choose("s", "i", crit) == ""
+        assert llm.Generator().generate("hola") is None
+        emb = llm.Embedder(model="m", query_prefix="q:", doc_prefix="d:")
+        assert emb.scheme == "m|q:|d:" and emb.docs(["a", "b"]) == [None, None] and emb.doc("a") is None
+
+        vistos = []
+
+        def solo_uno_por_uno(url, **kw):
+            vistos.append(kw["json"])
+            if url == llm.OLLAMA_URL:
+                return R(200, {"embedding": [1.0, 2.0]})
+            return R(500)  # el lote falla
+        llm.requests.post = solo_uno_por_uno
+        assert emb.queries(["a", "b"]) == [[1.0, 2.0], [1.0, 2.0]]  # si el lote falla, pide uno por uno
+        assert [v["prompt"] for v in vistos if "prompt" in v] == ["q:a", "q:b"]  # con el prefijo de pregunta
+    finally:
+        llm.requests.post, llm.time.sleep = old_post, old_sleep
+
+
+def test_llm_el_esquema_por_defecto_coincide_con_las_constantes():
+    import llm
+    assert llm.Embedder().scheme == f"{mem_engine.EMBEDDING_MODEL}|{mem_engine.QUERY_PREFIX}|{mem_engine.DOC_PREFIX}"
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

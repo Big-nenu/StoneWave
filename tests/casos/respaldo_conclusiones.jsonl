@@ -1,0 +1,14 @@
+{"id": "r01", "conclusion": "Luis prefiere aprender haciendo ejercicios prácticos", "recuerdo": "Prefiero ejercicios prácticos a solo leer teoría", "esperado": "respalda"}
+{"id": "r02", "conclusion": "Luis prefiere aprender haciendo ejercicios prácticos", "recuerdo": "Aprendo más cuando programo yo mismo los ejemplos", "esperado": "respalda"}
+{"id": "r03", "conclusion": "Luis prefiere aprender haciendo ejercicios prácticos", "recuerdo": "Me aburren los ejercicios prácticos, prefiero solo leer teoría", "esperado": "contradice"}
+{"id": "r04", "conclusion": "Luis prefiere aprender haciendo ejercicios prácticos", "recuerdo": "Nunca practico lo que estudio, solo leo", "esperado": "contradice"}
+{"id": "r05", "conclusion": "Luis prefiere aprender haciendo ejercicios prácticos", "recuerdo": "Mi perfume favorito es Versace Oud Noir", "esperado": "neutro"}
+{"id": "r06", "conclusion": "Luis prefiere aprender haciendo ejercicios prácticos", "recuerdo": "Vivo en Guadalajara", "esperado": "neutro"}
+{"id": "r07", "conclusion": "Luis usa herramientas de IA que corren en su propia computadora", "recuerdo": "Uso Ollama con modelos locales para mis proyectos", "esperado": "respalda"}
+{"id": "r08", "conclusion": "Luis usa herramientas de IA que corren en su propia computadora", "recuerdo": "Instalé embeddinggemma en mi PC", "esperado": "respalda"}
+{"id": "r09", "conclusion": "Luis usa herramientas de IA que corren en su propia computadora", "recuerdo": "Solo uso ChatGPT en la nube, no instalo nada en mi computadora", "esperado": "contradice"}
+{"id": "r10", "conclusion": "Luis usa herramientas de IA que corren en su propia computadora", "recuerdo": "Estudié Ingeniería en Computación en Lamar", "esperado": "neutro"}
+{"id": "r11", "conclusion": "Luis trabaja en el área de capacitación", "recuerdo": "Organizo cursos de capacitación en Neodata", "esperado": "respalda"}
+{"id": "r12", "conclusion": "Luis trabaja en el área de capacitación", "recuerdo": "Doy cursos de Precios Unitarios los sábados", "esperado": "respalda"}
+{"id": "r13", "conclusion": "Luis trabaja en el área de capacitación", "recuerdo": "Nunca he dado ni organizado un curso", "esperado": "contradice"}
+{"id": "r14", "conclusion": "Luis trabaja en el área de capacitación", "recuerdo": "Mi perfume favorito es Drakkar Noir", "esperado": "neutro"}

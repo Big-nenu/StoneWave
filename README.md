@@ -527,6 +527,19 @@ Lo que muestran los fallos (los mismos con 1 y 5 piedras):
 
 **Estado:** con 4 casos de ejemplo (`--cases` omitido) o con el dataset de 50. Los umbrales aún se calibraron con pocos recuerdos; falta repetir con una memoria real grande.
 
+## Comparar modelos
+
+Para elegir los modelos de Ollama con casos en español (necesita Ollama; usa bases de datos temporales y no toca tu memoria), con los **mismos prompts que usa el motor**:
+
+```bash
+python tests/compare_models.py                                   # todo, con los modelos por defecto
+python tests/compare_models.py decision d1:3b d3:2b              # contradicciones y respaldo de conclusiones con estos modelos de decisión
+python tests/compare_models.py generativo nemotron-3.5-bolt:e4b  # conclusiones con estos modelos generativos
+python tests/compare_models.py todo --json resultados.json
+```
+
+Los casos están en `tests/casos/` (`pares_decision.jsonl`, `respaldo_conclusiones.jsonl`, `casos_conclusiones.jsonl`) y se pueden editar. Los resultados del 8 de noviembre de 2026 están en [`docs/pruebas_modelos.md`](docs/pruebas_modelos.md): `d1:3b` se queda como modelo de decisión y, para las conclusiones, `nemotron-3.5-bolt:e4b` (`STONEWAVE_CONCLUSION_MODEL`) sale mucho mejor que `qwen2.5:0.5b`.
+
 ## Errores comunes
 
 - **"Connection closed" / servidor en rojo:** el script falla al arrancar. Ejecútalo a mano (`python mcp_server.py`) y lee el error.
@@ -581,12 +594,12 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Ajustar `CONFLICT_SIM` (0.40 → ~0.30) y revisar el sótano cuando hay un recuerdo activo parecido, según los fallos de MemBench | Hecho: `CONFLICT_SIM` 0.30 y 0.35 empeoran (se queda en 0.40); el sótano se arregló con la pista de pasado en `query` (8/8) |
 | API HTTP local para agentes sin MCP (`api.py`: `/inject`, `/query`, `/dream`) | Hecho |
 | Borrar y corregir recuerdos (`forget_memory`, `update_memory`) | Hecho |
-| Razonar: el sueño saca conclusiones (hipótesis) de lo nuevo, las verifica y las pesa con recuerdos posteriores | Hecho (probado sin Ollama; falta ver la calidad con modelos reales) |
+| Razonar: el sueño saca conclusiones (hipótesis) de lo nuevo, las verifica y las pesa con recuerdos posteriores | Hecho (probado con modelos reales el 8 nov 2026: ver `docs/pruebas_modelos.md`) |
 | `get_context`: resumen con presupuesto de tokens para empezar cada chat | Hecho |
 | Limpieza de conclusiones viejas: las hipótesis sin respaldo caducan y hay un tope de 40 | Hecho |
 | Capa de modelos separada (`llm.py`): `Embedder`, `Generator` y `Decider` intercambiables | Hecho |
 | `doctor` revisa también el modelo generativo de las conclusiones | Hecho |
-| Elegir el modelo generativo de las conclusiones (¿mejor que `qwen2.5:0.5b`?) con pruebas en español | Pendiente |
+| Elegir el modelo generativo de las conclusiones con pruebas en español | Hecho: `qwen2.5:0.5b` sale muy mal y `nemotron-3.5-bolt:e4b` es el mejor equilibrio (ver `docs/pruebas_modelos.md`) |
 | Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |
 | Importar/exportar en `.jsonl` universal + adaptador del MCP `memory` | Hecho |
 | Contradicciones resueltas por fecha (`created_at`), no por orden de ID | Hecho |

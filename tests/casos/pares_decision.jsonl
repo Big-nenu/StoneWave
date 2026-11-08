@@ -1,0 +1,30 @@
+{"id": "c01", "a": "Vivo en Guadalajara con mis papás y mi hermana", "b": "Ahora vivo en Monterrey con mi pareja", "esperado": "contradice", "tipo": "contradice"}
+{"id": "c02", "a": "Mi perfume favorito es Versace Oud Noir", "b": "Mi perfume favorito es Drakkar Noir", "esperado": "contradice", "tipo": "contradice"}
+{"id": "c03", "a": "Trabajo en Neodata en Guadalajara", "b": "Ya no trabajo en Neodata, renuncié", "esperado": "contradice", "tipo": "contradice"}
+{"id": "c04", "a": "Uso Cline en VS Code para programar", "b": "Dejé de usar Cline, ahora programo con Claude Code", "esperado": "contradice", "tipo": "contradice"}
+{"id": "c05", "a": "Mi laptop de casa usa Windows 11", "b": "Mi laptop de casa ahora usa Linux", "esperado": "contradice", "tipo": "contradice"}
+{"id": "c06", "a": "El curso de Precios Unitarios Básico es los sábados", "b": "El curso de Precios Unitarios Básico ahora es los miércoles por la noche", "esperado": "contradice", "tipo": "contradice"}
+{"id": "c07", "a": "Mi Kindle no tiene jailbreak", "b": "Mi Kindle ya tiene jailbreak y uso KOReader", "esperado": "contradice", "tipo": "contradice"}
+{"id": "c08", "a": "Mi examen de certificación es el 15 de noviembre", "b": "Mi examen de certificación se movió al 2 de diciembre", "esperado": "contradice", "tipo": "contradice"}
+{"id": "c09", "a": "No me gusta el café", "b": "Me encanta el café de la mañana", "esperado": "contradice", "tipo": "contradice"}
+{"id": "c10", "a": "El portal de proveedores lo voy a hacer en Python", "b": "Decidí hacer el portal de proveedores en JavaScript, no en Python", "esperado": "contradice", "tipo": "contradice"}
+{"id": "k11", "a": "Me llamo Luis Eduardo", "b": "Estudié Ingeniería en Computación en Lamar", "esperado": "no", "tipo": "complementa"}
+{"id": "k12", "a": "Trabajo en Neodata organizando cursos", "b": "Hago evaluación de modelos de IA por proyecto", "esperado": "no", "tipo": "complementa"}
+{"id": "k13", "a": "Tengo un Kindle con jailbreak", "b": "Uso KOReader para leer PDFs en el Kindle", "esperado": "no", "tipo": "complementa"}
+{"id": "k14", "a": "Mi perfume favorito es Versace Oud Noir", "b": "También tengo un Hugo Boss The Scent", "esperado": "no", "tipo": "complementa"}
+{"id": "k15", "a": "Vivo en Guadalajara", "b": "Me muevo en camión por la ciudad", "esperado": "no", "tipo": "complementa"}
+{"id": "k16", "a": "Estoy desarrollando el juego Atom-Fusion", "b": "Atom-Fusion mezcla partículas físicas como Little Alchemy", "esperado": "no", "tipo": "complementa"}
+{"id": "k17", "a": "Uso Ollama con modelos locales", "b": "Mi modelo de embeddings es embeddinggemma", "esperado": "no", "tipo": "complementa"}
+{"id": "k18", "a": "Los cursos sabatinos se rotan entre tres personas", "b": "A mí me toca dar un curso sabatino al mes", "esperado": "no", "tipo": "complementa"}
+{"id": "k19", "a": "Prefiero aprender haciendo ejercicios", "b": "Los videos largos me cuestan trabajo", "esperado": "no", "tipo": "complementa"}
+{"id": "k20", "a": "Mi laptop de casa tiene 32 GB de RAM", "b": "La PC de mi oficina tiene 16 GB de RAM", "esperado": "no", "tipo": "complementa"}
+{"id": "k21", "a": "Tengo un gato llamado Michi", "b": "Mi vecino tiene un perro llamado Bruno", "esperado": "no", "tipo": "complementa"}
+{"id": "k22", "a": "Estudié en Lamar de 2009 a 2013", "b": "Me gradué de Lamar en 2013", "esperado": "no", "tipo": "complementa"}
+{"id": "a23", "a": "Mi computadora tiene 32 GB de RAM", "b": "Mi computadora tiene 16 GB de RAM", "esperado": "no", "tipo": "ambigua"}
+{"id": "a24", "a": "Mi examen es el viernes", "b": "Mi examen es el lunes", "esperado": "no", "tipo": "ambigua"}
+{"id": "a25", "a": "Voy a ir al cine el sábado", "b": "El sábado doy curso en Neodata", "esperado": "no", "tipo": "ambigua"}
+{"id": "a26", "a": "Mi hermano estudia medicina", "b": "Mi hermana estudia ingeniería", "esperado": "no", "tipo": "ambigua"}
+{"id": "a27", "a": "Me gusta el color azul", "b": "Me gusta el color negro", "esperado": "no", "tipo": "ambigua"}
+{"id": "a28", "a": "Hoy comí tacos", "b": "Hoy comí pizza", "esperado": "no", "tipo": "ambigua"}
+{"id": "a29", "a": "Mi teléfono tiene 128 GB", "b": "Mi laptop tiene 512 GB", "esperado": "no", "tipo": "ambigua"}
+{"id": "a30", "a": "Escucho rock por las mañanas", "b": "Escucho jazz por las noches", "esperado": "no", "tipo": "ambigua"}

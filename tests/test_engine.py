@@ -1212,6 +1212,22 @@ def test_caducar_bd_vieja_sin_last_decay_se_migra():
     e.close()
 
 
+def test_conclusion_se_lee_lo_que_contesta_el_modelo_generativo():
+    e = make_engine()
+
+    def concl(text):
+        e.generator = _FakeGenerator(text)
+        return MemHolograficEngine._ask_llm_conclusion(e, ["uno", "dos"])  # el metodo real (make_engine lo reemplaza en la instancia)
+    assert concl("Prefiere aprender practicando con proyectos.") == "Prefiere aprender practicando con proyectos."
+    assert concl("NUEVA CONCLUSIÓN: El usuario prefiere procesar sus datos en su propia computadora") == "El usuario prefiere procesar sus datos en su propia computadora"
+    assert concl("Conclusión: Le gusta cocinar los domingos en casa") == "Le gusta cocinar los domingos en casa"
+    for nada in ("NINGUNA", "Ninguna", "Ningún recuerdo muestra un patrón coherente entre sí", "Ninguno de estos recuerdos indica un hábito claro",
+                 "No existe ninguna conclusión clara que se desprenda de estos recuerdos", "No hay una conclusión clara", "", "corta"):
+        assert concl(nada) == "", nada
+    assert len(concl("Algo muy largo " * 40)) == 240
+    assert concl(None) is None  # el modelo no responde: distinto de "no hay conclusion"
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

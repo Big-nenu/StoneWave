@@ -77,6 +77,9 @@ CONFIRM_SUPPORT = 2          # recuerdos nuevos que la respaldan para pasar de '
 
 SYNC_FILENAME = "stonewave-memoria.jsonl"  # nombre del archivo compartido de `sync`
 
+# Si la "conclusion" del modelo empieza asi, en realidad esta diciendo que no hay ninguna
+NO_CONCLUSION = ("ningun", "ningún", "no hay", "no existe", "no se puede", "no es posible", "no se desprende")
+
 STOPWORDS = {
     "que", "como", "cual", "cuales", "quien", "donde", "cuando", "cuanto", "para", "por",
     "con", "sin", "sobre", "entre", "del", "los", "las", "una", "uno", "unos", "unas",
@@ -1146,7 +1149,8 @@ class StoneWaveEngine:
         if text is None:
             return None
         line = next((l.strip(" -*•\t\"'") for l in text.strip().splitlines() if l.strip()), "")
-        if not line or line.upper().startswith("NINGUNA") or len(line) < 15:
+        line = re.sub(r"^(nueva\s+)?conclusi[oó]n\s*:\s*", "", line, flags=re.I).strip(" -*•\t\"'")  # "NUEVA CONCLUSIÓN: ..." -> "..."
+        if not line or len(line) < 15 or line.casefold().startswith(NO_CONCLUSION):
             return ""
         return line[:240]
 

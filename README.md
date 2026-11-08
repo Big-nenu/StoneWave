@@ -67,7 +67,7 @@ Guardar sigue siendo rápido (sin modelos): `inject_memory` solo deja el recuerd
 3. **Nace como hipótesis** con poca energía (0.3), ligada a los recuerdos de donde salió. Una igual que ya existía solo se refuerza.
 4. **Se pesa con lo nuevo.** En los siguientes sueños, los recuerdos nuevos parecidos a la hipótesis la respaldan (sube su energía) o la contradicen (baja). Con 2 respaldos pasa a **confirmada**; si su energía llega a casi 0, o ya no existen los recuerdos de origen, se descarta.
 
-Las conclusiones **no afectan a `query_memory`** ni a los recuerdos: viven aparte (tablas `conclusions` y `conclusion_sources`) y salen en `get_context`, marcadas como *hipótesis* hasta que se confirman. Si una está mal, `forget_conclusion` la borra. Cada sueño razona hasta 8 grupos y hace hasta 20 revisiones de respaldo. Si el modelo no responde, los recuerdos siguen pendientes y se reintenta en el siguiente sueño. Con modelos chicos las conclusiones pueden salir flojas: para eso existe la verificación y la etiqueta de hipótesis. Se apaga con `STONEWAVE_CONCLUSIONS=false`. Las conclusiones no se exportan al `.jsonl`.
+Las conclusiones **no cambian el resultado de `query_memory`** ni tocan los recuerdos: viven aparte (tablas `conclusions` y `conclusion_sources`). Salen en `get_context` y, cuando se parecen a la pregunta, `query_memory` las muestra en una sección aparte (`[C n]`). Siempre marcadas como *hipótesis* hasta que se confirman. Si una está mal, `forget_conclusion` la borra. Cada sueño razona hasta 8 grupos y hace hasta 20 revisiones de respaldo. Si el modelo no responde, los recuerdos siguen pendientes y se reintenta en el siguiente sueño. Con modelos chicos las conclusiones pueden salir flojas: para eso existe la verificación y la etiqueta de hipótesis. Se apaga con `STONEWAVE_CONCLUSIONS=false`. Las conclusiones no se exportan al `.jsonl`.
 
 ### Contexto con presupuesto de tokens (`get_context`)
 
@@ -273,7 +273,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `get_context` | Resumen corto con límite de tokens: identidad, conclusiones y lo más importante (se llama al inicio de cada chat) |
 | `list_memories` | Lista completa de lo que ya se sabe del usuario, con sus IDs |
 | `forget_conclusion` | Borra una conclusión que el sueño dedujo mal (por su `[C n]`); no toca los recuerdos |
-| `query_memory` | Busca recuerdos relacionados con un tema (y avisa, como historial, si el tema estaba en la papelera) |
+| `query_memory` | Busca recuerdos relacionados con un tema (y avisa, como historial, si el tema estaba en la papelera; también muestra aparte las conclusiones parecidas) |
 | `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |
 | `force_dream` | Sueño: archiva lo que no se usa, clasifica por tema y enlaza recuerdos parecidos |
 | `trigger_reflection` | Genera una intuición nueva |

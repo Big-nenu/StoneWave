@@ -1416,6 +1416,34 @@ class StoneWaveEngine:
         self._sync_version()
         return confirmed, dropped
 
+    def query_conclusions(self, text, namespace="default", limit=2):
+        """Conclusiones parecidas a 'text': lista de dicts (sim, id, content, status, energy). Solo informa, no modifica nada.
+        Necesita numpy; sin el devuelve []."""
+        if np is None:
+            return []
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute("SELECT id, content, status, COALESCE(energy, 0), embedding FROM conclusions WHERE namespace=?", (namespace,)).fetchall()
+        if not rows:
+            return []
+        vecs = self.get_embeddings([text])
+        if not vecs or vecs[0] is None:
+            return []
+        _ids, _mat, _idx, mu = self._load_vectors(namespace, "facts")
+        q = self._unit(np.asarray(vecs[0], dtype=np.float32), mu)
+        scored = []
+        for cid, content, status, energy, blob in rows:
+            try:
+                v = np.asarray(json.loads(blob), dtype=np.float32)
+            except Exception:
+                continue
+            if v.shape != q.shape:
+                continue
+            s = float(self._unit(v, mu) @ q)
+            if s >= MIN_SIM:
+                scored.append({"sim": s, "id": cid, "content": content, "status": status, "energy": float(energy)})
+        scored.sort(key=lambda d: d["sim"], reverse=True)
+        return scored[:limit]
+
     def list_conclusions(self, namespace="default"):
         """Conclusiones como dicts: id, content, energy, status ('hipotesis' | 'confirmada'), support, against, sources [IDs].
         Las confirmadas primero y luego por energia."""

@@ -140,10 +140,23 @@ def forget_conclusion(conclusion_id: int) -> str:
         return f"Conclusión olvidada: [C {res['id']}] {res['content']}"
     return res.get("message", "No se pudo olvidar la conclusión.")
 
+def _conclusions_text(items) -> str:
+    """Conclusiones que dedujo el sueño y se parecen a la pregunta. Las hipotesis NO son hechos del usuario."""
+    if not items:
+        return ""
+    lines = "\n".join(f"- [C {c['id']}] {c['content']} ({'confirmada' if c['status'] == 'confirmada' else 'hipótesis, no confirmada'})" for c in items)
+    return "\n\nConclusiones relacionadas (las dedujo el sueño; las hipótesis no son hechos del usuario):\n" + lines
+
 @mcp.tool()
 def query_memory(text: str) -> str:
-    """Busca recuerdos relacionados con un tema. Cada resultado trae su ID (sirve para update_memory / forget_memory)."""
+    """Busca recuerdos relacionados con un tema. Cada resultado trae su ID (sirve para update_memory / forget_memory).
+    También muestra, aparte, las conclusiones relacionadas que dedujo el sueño (con su [C n])."""
     _touch_activity()
+    with _quiet():
+        conclusions = engine.query_conclusions(text, namespace=NS, limit=2)
+    return _query_text(text) + _conclusions_text(conclusions)
+
+def _query_text(text: str) -> str:
     with _quiet():
         res = engine.query(text, namespace=NS)
         history = engine.query_trash(text, namespace=NS, limit=2)

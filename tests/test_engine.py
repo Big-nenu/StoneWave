@@ -1020,6 +1020,21 @@ def test_get_context_respeta_el_presupuesto_y_marca_hipotesis():
     assert "sin mostrar" not in big and big.count("[ID ") == len(e.list_facts()), big
 
 
+def test_query_conclusions_encuentra_la_parecida_y_no_toca_nada():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    antes = rows(e.db_path, "SELECT energy, last_checked FROM conclusions")
+    hits = e.query_conclusions("cómo aprende Luis mejor haciendo ejercicios")
+    assert len(hits) == 1 and hits[0]["content"] == CONC and hits[0]["status"] == "hipotesis", hits
+    assert e.query_conclusions("astronomía de agujeros negros") == []
+    assert e.query_conclusions("cómo aprende Luis", namespace="otro") == []
+    assert rows(e.db_path, "SELECT energy, last_checked FROM conclusions") == antes  # solo informa
+    e.forget_conclusion(hits[0]["id"])
+    assert e.query_conclusions("aprende mejor haciendo ejercicios") == []
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

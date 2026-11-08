@@ -69,6 +69,10 @@ CONCLUSION_GROUPS = 8        # grupos de recuerdos que se razonan por sueño
 CONCLUSION_GROUP_SIZE = 4    # recuerdos por grupo: el pendiente + sus vecinos mas parecidos
 CONCLUSION_MAX_CHECKS = 20   # revisiones de respaldo (modelo de decision) por sueño al pesar las hipotesis
 CONCLUSION_START_ENERGY = 0.3  # una hipotesis nace con poca energia; sube si nuevos recuerdos la respaldan
+CONCLUSION_DECAY = 0.97      # una hipotesis sin respaldo nuevo conserva este factor de energia por dia (de 0.3 a 0.1 en ~36 dias)
+CONCLUSION_CONFIRMED_DECAY = 0.995  # una confirmada se desgasta mucho mas despacio
+CONCLUSION_FLOOR = 0.1       # una hipotesis con menos energia que esto caduca (se borra)
+CONCLUSION_MAX = 40          # maximo de hipotesis por namespace; si hay mas, se van las de menos energia
 CONFIRM_SUPPORT = 2          # recuerdos nuevos que la respaldan para pasar de 'hipotesis' a 'confirmada'
 
 SYNC_FILENAME = "stonewave-memoria.jsonl"  # nombre del archivo compartido de `sync`
@@ -231,6 +235,10 @@ class StoneWaveEngine:
             cursor.execute("CREATE TABLE IF NOT EXISTS conclusions (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT DEFAULT 'default', content TEXT, energy REAL, embedding TEXT, status TEXT DEFAULT 'hipotesis', support INTEGER DEFAULT 0, against INTEGER DEFAULT 0, created_at REAL, last_checked REAL)")
             cursor.execute("CREATE TABLE IF NOT EXISTS conclusion_sources (conclusion_id INTEGER NOT NULL, fact_id INTEGER NOT NULL, PRIMARY KEY (conclusion_id, fact_id))")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_conclusions_namespace ON conclusions(namespace)")
+            ccols = [c[1] for c in cursor.execute("PRAGMA table_info(conclusions)").fetchall()]
+            if "last_decay" not in ccols:  # desde cuando se cuenta el desgaste de la energia
+                cursor.execute("ALTER TABLE conclusions ADD COLUMN last_decay REAL")
+                cursor.execute("UPDATE conclusions SET last_decay=COALESCE(created_at, ?)", (time.time(),))
             for topic in CLASSIFICATION_TOPICS:
                 cursor.execute("INSERT OR IGNORE INTO topics (topic_name, description) VALUES (?, ?)", (topic, f"Tema: {topic}"))
             conn.commit()
@@ -1230,9 +1238,9 @@ class StoneWaveEngine:
                     reinforced += 1
                 else:
                     cur = conn.execute(
-                        "INSERT INTO conclusions (namespace, content, energy, embedding, status, support, against, created_at, last_checked) "
-                        "VALUES (?, ?, ?, ?, 'hipotesis', 0, 0, ?, ?)",
-                        (namespace, concl, CONCLUSION_START_ENERGY, json.dumps(cvec), now, now))
+                        "INSERT INTO conclusions (namespace, content, energy, embedding, status, support, against, created_at, last_checked, last_decay) "
+                        "VALUES (?, ?, ?, ?, 'hipotesis', 0, 0, ?, ?, ?)",
+                        (namespace, concl, CONCLUSION_START_ENERGY, json.dumps(cvec), now, now, now))
                     cid = cur.lastrowid
                     new += 1
                 conn.executemany("INSERT OR IGNORE INTO conclusion_sources (conclusion_id, fact_id) VALUES (?, ?)", [(cid, i) for i, _c in facts])
@@ -1243,6 +1251,36 @@ class StoneWaveEngine:
                 conn.commit()
         self._sync_version()  # solo cambiaron tablas sin vectores de la biblioteca
         return new, reinforced, dropped
+
+    def _decay_conclusions(self, namespace):
+        """Limpieza de conclusiones viejas. Las hipotesis pierden energia con los dias (CONCLUSION_DECAY) y, bajo CONCLUSION_FLOOR,
+        caducan: se borran (solo eran deducciones; los recuerdos siguen ahi). Las confirmadas se desgastan mucho mas despacio y, si bajan
+        de 0.4, vuelven a ser hipotesis. Ademas se guardan como maximo CONCLUSION_MAX hipotesis por namespace (se van las de menos energia).
+        Lo que respalda o refuerza una conclusion le sube la energia, asi que lo que sigue siendo cierto se mantiene. Devuelve cuantas caducaron."""
+        now = time.time()
+        expired = []
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT id, status, COALESCE(energy, ?), COALESCE(last_decay, created_at, ?) FROM conclusions WHERE namespace=?",
+                                (CONCLUSION_START_ENERGY, now, namespace)).fetchall()
+            for cid, status, energy, ref in rows:
+                days = max(0.0, (now - float(ref)) / 86400)
+                if days < 0.05:
+                    continue
+                energy = float(energy) * ((CONCLUSION_CONFIRMED_DECAY if status == "confirmada" else CONCLUSION_DECAY) ** days)
+                if status == "confirmada":
+                    status = "hipotesis" if energy < 0.4 else status
+                elif energy < CONCLUSION_FLOOR:
+                    expired.append(cid)
+                    continue
+                conn.execute("UPDATE conclusions SET energy=?, status=?, last_decay=? WHERE id=?", (energy, status, now, cid))
+            conn.executemany("DELETE FROM conclusion_sources WHERE conclusion_id=?", [(i,) for i in expired])
+            conn.executemany("DELETE FROM conclusions WHERE id=?", [(i,) for i in expired])
+            over = [r[0] for r in conn.execute(
+                "SELECT id FROM conclusions WHERE namespace=? AND status!='confirmada' ORDER BY energy DESC, id DESC", (namespace,)).fetchall()][CONCLUSION_MAX:]
+            conn.executemany("DELETE FROM conclusion_sources WHERE conclusion_id=?", [(i,) for i in over])
+            conn.executemany("DELETE FROM conclusions WHERE id=?", [(i,) for i in over])
+            conn.commit()
+        return len(expired) + len(over)
 
     def _weigh_conclusions(self, namespace):
         """Pesa las hipotesis con los recuerdos NUEVOS parecidos a ellas: los que las respaldan suben su energia, los que las
@@ -1411,9 +1449,11 @@ class StoneWaveEngine:
                 f"Temas clasificados: {topics}.")
         if CONCLUSIONS_ON:  # razonar: el sueño pesa las hipotesis viejas y saca conclusiones de lo nuevo (nunca debe tirar el sueño)
             try:
+                expired = self._decay_conclusions(namespace)
                 confirmed, w_drop = self._weigh_conclusions(namespace)
                 c_new, c_re, c_drop = self._reason_pending(namespace)
-                msg += f" Conclusiones: {c_new} nuevas, {c_re} reforzadas, {confirmed} confirmadas, {c_drop + w_drop} descartadas."
+                msg += (f" Conclusiones: {c_new} nuevas, {c_re} reforzadas, {confirmed} confirmadas, "
+                        f"{c_drop + w_drop} descartadas, {expired} caducadas.")
             except Exception as ex:
                 print(f"StoneWave: error razonando conclusiones: {ex!r}", file=sys.stderr)
         with sqlite3.connect(self.db_path) as conn:

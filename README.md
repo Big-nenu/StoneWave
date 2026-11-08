@@ -66,6 +66,7 @@ Guardar sigue siendo rápido (sin modelos): `inject_memory` solo deja el recuerd
 2. **Se verifica.** El modelo de decisión comprueba, recuerdo por recuerdo, que lo respalden. Solo pasa si la mayoría la respalda y ninguno la contradice.
 3. **Nace como hipótesis** con poca energía (0.3), ligada a los recuerdos de donde salió. Una igual que ya existía solo se refuerza.
 4. **Se pesa con lo nuevo.** En los siguientes sueños, los recuerdos nuevos parecidos a la hipótesis la respaldan (sube su energía) o la contradicen (baja). Con 2 respaldos pasa a **confirmada**; si su energía llega a casi 0, o ya no existen los recuerdos de origen, se descarta.
+5. **Caducan.** Una hipótesis que no recibe respaldo nuevo pierde energía con los días (×0.97 por día: de 0.3 a 0.1 en unos 36 días) y, bajo 0.1, caduca y se borra; los recuerdos no se tocan. Las confirmadas se desgastan mucho más despacio (×0.995 por día) y, si bajan de 0.4, vuelven a ser hipótesis. Se guardan como máximo 40 hipótesis por namespace (se van las de menos energía).
 
 Las conclusiones **no cambian el resultado de `query_memory`** ni tocan los recuerdos: viven aparte (tablas `conclusions` y `conclusion_sources`). Salen en `get_context` y, cuando se parecen a la pregunta, `query_memory` las muestra en una sección aparte (`[C n]`). Siempre marcadas como *hipótesis* hasta que se confirman. Si una está mal, `forget_conclusion` la borra. Cada sueño razona hasta 8 grupos y hace hasta 20 revisiones de respaldo. Si el modelo no responde, los recuerdos siguen pendientes y se reintenta en el siguiente sueño. Con modelos chicos las conclusiones pueden salir flojas: para eso existe la verificación y la etiqueta de hipótesis. Se apaga con `STONEWAVE_CONCLUSIONS=false`. Las conclusiones no se exportan al `.jsonl`.
 
@@ -582,6 +583,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Borrar y corregir recuerdos (`forget_memory`, `update_memory`) | Hecho |
 | Razonar: el sueño saca conclusiones (hipótesis) de lo nuevo, las verifica y las pesa con recuerdos posteriores | Hecho (probado sin Ollama; falta ver la calidad con modelos reales) |
 | `get_context`: resumen con presupuesto de tokens para empezar cada chat | Hecho |
+| Limpieza de conclusiones viejas: las hipótesis sin respaldo caducan y hay un tope de 40 | Hecho |
 | Capa de modelos separada (`llm.py`): `Embedder`, `Generator` y `Decider` intercambiables | Hecho |
 | Elegir el modelo generativo de las conclusiones (¿mejor que `qwen2.5:0.5b`?) con pruebas en español | Pendiente |
 | Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |

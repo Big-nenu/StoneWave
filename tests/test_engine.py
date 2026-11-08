@@ -1134,6 +1134,84 @@ def test_llm_el_esquema_por_defecto_coincide_con_las_constantes():
     assert llm.Embedder().scheme == f"{mem_engine.EMBEDDING_MODEL}|{mem_engine.QUERY_PREFIX}|{mem_engine.DOC_PREFIX}"
 
 
+def _atrasar_desgaste(e, days):
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE conclusions SET last_decay = ?", (time.time() - days * 86400,))
+        c.commit()
+
+
+def test_caducar_la_hipotesis_pierde_energia_con_los_dias():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    _atrasar_desgaste(e, 10)
+    out = e.dream()
+    c = e.list_conclusions()
+    assert len(c) == 1 and abs(c[0]["energy"] - 0.3 * 0.97 ** 10) < 0.01, c
+    assert "0 caducadas" in out, out
+
+
+def test_caducar_la_hipotesis_sin_respaldo_se_borra_y_los_recuerdos_quedan():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    _atrasar_desgaste(e, 60)  # 0.3 * 0.97^60 = 0.048 < 0.1
+    out = e.dream()
+    assert e.list_conclusions() == [] and "1 caducadas" in out, out
+    assert len(e.list_facts()) == 2 and rows(e.db_path, "SELECT * FROM conclusion_sources") == []
+
+
+def test_caducar_una_confirmada_se_desgasta_despacio_y_vuelve_a_hipotesis():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE conclusions SET status='confirmada', energy=0.9")
+        c.commit()
+    _atrasar_desgaste(e, 100)  # 0.9 * 0.995^100 = 0.55: sigue confirmada
+    e.dream()
+    c = e.list_conclusions()[0]
+    assert c["status"] == "confirmada" and abs(c["energy"] - 0.9 * 0.995 ** 100) < 0.01, c
+    _atrasar_desgaste(e, 200)  # 0.55 * 0.995^200 = 0.20: ya no merece estar confirmada, pero no caduca
+    e.dream()
+    c = e.list_conclusions()[0]
+    assert c["status"] == "hipotesis" and c["energy"] > mem_engine.CONCLUSION_FLOOR, c
+
+
+def test_caducar_hay_un_tope_de_hipotesis_y_se_van_las_de_menos_energia():
+    e = make_engine()
+    old = mem_engine.CONCLUSION_MAX
+    mem_engine.CONCLUSION_MAX = 2
+    try:
+        with sqlite3.connect(e.db_path) as c:
+            for n, (status, energy) in enumerate([("hipotesis", 0.2), ("hipotesis", 0.5), ("hipotesis", 0.3), ("hipotesis", 0.4), ("confirmada", 0.1)]):
+                c.execute("INSERT INTO conclusions (namespace, content, energy, embedding, status, created_at, last_checked, last_decay) "
+                          "VALUES ('default', ?, ?, '[]', ?, ?, ?, ?)", (f"conclusion {n}", energy, status, time.time(), time.time(), time.time()))
+            c.commit()
+        assert e._decay_conclusions("default") == 2
+        left = sorted((c["status"], round(c["energy"], 2)) for c in e.list_conclusions())
+        assert left == [("confirmada", 0.1), ("hipotesis", 0.4), ("hipotesis", 0.5)], left  # la confirmada no cuenta para el tope
+    finally:
+        mem_engine.CONCLUSION_MAX = old
+
+
+def test_caducar_bd_vieja_sin_last_decay_se_migra():
+    db = os.path.join(tempfile.mkdtemp(), "vieja.db")
+    with sqlite3.connect(db) as c:
+        c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        c.execute("INSERT INTO meta VALUES ('embed_scheme', ?)", (f"{mem_engine.EMBEDDING_MODEL}|{mem_engine.QUERY_PREFIX}|{mem_engine.DOC_PREFIX}",))
+        c.execute("CREATE TABLE conclusions (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT DEFAULT 'default', content TEXT, energy REAL, "
+                  "embedding TEXT, status TEXT DEFAULT 'hipotesis', support INTEGER DEFAULT 0, against INTEGER DEFAULT 0, created_at REAL, last_checked REAL)")
+        c.execute("INSERT INTO conclusions (namespace, content, energy, embedding, created_at, last_checked) VALUES ('default', 'vieja', 0.3, '[]', 1767225600.0, 1767225600.0)")
+        c.commit()
+    e = make_engine(db)
+    assert rows(db, "SELECT last_decay FROM conclusions") == [(1767225600.0,)]
+    e.close()
+
+
 if __name__ == "__main__":
     fallos = 0
     for name, fn in list(globals().items()):

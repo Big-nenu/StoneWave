@@ -58,6 +58,21 @@ No hace falta que el agente llame a `force_dream`. El servidor revisa cada 5 min
 
 Así la memoria se ordena sola mientras no usas la IA, sin hacer lenta ninguna consulta. El resultado queda en el log del servidor (stderr).
 
+### Conclusiones: el sueño razona (inspirado en Honcho)
+
+Guardar sigue siendo rápido (sin modelos): `inject_memory` solo deja el recuerdo **pendiente de razonar**. Después, en cada sueño:
+
+1. **Se razona lo pendiente.** Cada recuerdo pendiente se junta con sus vecinos más parecidos y un modelo generativo propone **una conclusión** (un gusto, un hábito, una forma de aprender). Si no hay una clara, no se inventa nada.
+2. **Se verifica.** El modelo de decisión comprueba, recuerdo por recuerdo, que lo respalden. Solo pasa si la mayoría la respalda y ninguno la contradice.
+3. **Nace como hipótesis** con poca energía (0.3), ligada a los recuerdos de donde salió. Una igual que ya existía solo se refuerza.
+4. **Se pesa con lo nuevo.** En los siguientes sueños, los recuerdos nuevos parecidos a la hipótesis la respaldan (sube su energía) o la contradicen (baja). Con 2 respaldos pasa a **confirmada**; si su energía llega a casi 0, o ya no existen los recuerdos de origen, se descarta.
+
+Las conclusiones **no afectan a `query_memory`** ni a los recuerdos: viven aparte (tablas `conclusions` y `conclusion_sources`) y salen en `get_context`, marcadas como *hipótesis* hasta que se confirman. Si una está mal, `forget_conclusion` la borra. Cada sueño razona hasta 8 grupos y hace hasta 20 revisiones de respaldo. Si el modelo no responde, los recuerdos siguen pendientes y se reintenta en el siguiente sueño. Con modelos chicos las conclusiones pueden salir flojas: para eso existe la verificación y la etiqueta de hipótesis. Se apaga con `STONEWAVE_CONCLUSIONS=false`. Las conclusiones no se exportan al `.jsonl`.
+
+### Contexto con presupuesto de tokens (`get_context`)
+
+En vez de listar los 30 recuerdos con más energía, el agente llama `get_context(token_budget=600)` al inicio de cada chat. Devuelve un resumen que cabe en el presupuesto (≈4 caracteres por token), en este orden: **identidad** (recuerdos fijos, hasta el 45 %), **conclusiones** (hasta el 25 %) y **recuerdos con más energía** (lo que sobre). Si algo no cabe lo dice, y el agente usa `query_memory` para ese tema. No modifica nada. `list_memories` sigue existiendo para ver la lista completa.
+
 ### Respaldo automático (7 días rotativos)
 
 El servidor MCP hace un respaldo de `memoria.db` **al arrancar** y, si sigue corriendo, revisa cada hora si ya toca el del día nuevo.
@@ -154,7 +169,7 @@ Dónde se pega esa configuración según el cliente (rutas habituales; pueden ca
 
 El servidor le dice al agente cuándo usar cada herramienta, pero no todos los clientes hacen caso de esas instrucciones. Si el tuyo no lo hace, pega esto en su archivo de reglas (`CLAUDE.md`, `AGENTS.md`, `.clinerules`, reglas de Cursor...):
 
-> Al inicio de cada conversación llama `list_memories`. Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama `inject_memory` (con `fijo=true` si es de identidad: nombre, carrera, familia). Antes de responder sobre el usuario o su historial, llama `query_memory`.
+> Al inicio de cada conversación llama `get_context`. Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama `inject_memory` (con `fijo=true` si es de identidad: nombre, carrera, familia). Antes de responder sobre el usuario o su historial, llama `query_memory`.
 
 ### Skill para que el agente use la memoria
 
@@ -173,7 +188,7 @@ Copy-Item -Recurse skills\stonewave-memory "$env:USERPROFILE\.agents\skills\"
 mkdir -p ~/.agents/skills && cp -r skills/stonewave-memory ~/.agents/skills/
 ```
 
-Si tu cliente usa otra carpeta, copia ahí la carpeta `stonewave-memory`. Otra opción es pegar esa misma regla en el prompt del agente: *"La memoria persistente es StoneWave: al inicio llama `list_memories`; guarda con `inject_memory`, corrige con `update_memory` y olvida con `forget_memory`."*
+Si tu cliente usa otra carpeta, copia ahí la carpeta `stonewave-memory`. Otra opción es pegar esa misma regla en el prompt del agente: *"La memoria persistente es StoneWave: al inicio llama `get_context`; guarda con `inject_memory`, corrige con `update_memory` y olvida con `forget_memory`."*
 
 ### Si tu agente no usa MCP
 
@@ -230,6 +245,8 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_EMBED_MODEL` | `embeddinggemma-2:270m` | Modelo de embeddings |
 | `STONEWAVE_LLM_MODEL` | `d1:3b` | Modelo de decisión (temas y contradicciones) |
 | `STONEWAVE_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
+| `STONEWAVE_CONCLUSIONS` | `true` | El sueño razona y saca conclusiones de los recuerdos nuevos (ver «Conclusiones»). `false` lo apaga |
+| `STONEWAVE_CONCLUSION_MODEL` | el de síntesis | Modelo **generativo** que propone las conclusiones (con uno de 4B o más salen mejor que con `qwen2.5:0.5b`) |
 | `STONEWAVE_STONES` | `5` | Piedras por consulta |
 | `STONEWAVE_RESULTS` | `3` | Máximo de recuerdos que devuelve una consulta |
 | `STONEWAVE_CONFLICT_SIM` | `0.40` | Similitud mínima para que el sueño revise si dos recuerdos se contradicen (más bajo = revisa más pares, más lento) |
@@ -253,7 +270,9 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 
 | Herramienta | Qué hace |
 |---|---|
-| `list_memories` | Lista lo que ya se sabe del usuario (se llama al inicio de cada chat) |
+| `get_context` | Resumen corto con límite de tokens: identidad, conclusiones y lo más importante (se llama al inicio de cada chat) |
+| `list_memories` | Lista completa de lo que ya se sabe del usuario, con sus IDs |
+| `forget_conclusion` | Borra una conclusión que el sueño dedujo mal (por su `[C n]`); no toca los recuerdos |
 | `query_memory` | Busca recuerdos relacionados con un tema (y avisa, como historial, si el tema estaba en la papelera) |
 | `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |
 | `force_dream` | Sueño: archiva lo que no se usa, clasifica por tema y enlaza recuerdos parecidos |
@@ -272,7 +291,7 @@ También hay una CLI: `python mem_cli.py inject|query|dream|reflect|bridge|clear
 
 ### Corregir u olvidar un recuerdo
 
-El agente ve cada recuerdo con su ID (`[ID 12]`) en `list_memories` y `query_memory`, y con eso puede:
+El agente ve cada recuerdo con su ID (`[ID 12]`) en `get_context`, `list_memories` y `query_memory`, y con eso puede:
 
 - **`update_memory(fact_id, new_content)`**: corrige el texto de un recuerdo (conserva su energía y si es fijo, y recalcula su vector). Es lo que debe usar cuando un dato cambió ("ya no vivo en X, ahora vivo en Y"), en vez de guardar uno nuevo y dejar el viejo.
 - **`forget_memory(fact_id=..., text=...)`**: borra un recuerdo. Con `fact_id` borra ese. Con `text` busca uno igual (sin importar mayúsculas) o casi igual (similitud ≥ 0.90). **Si el texto coincide con varios, no borra nada** y devuelve la lista con sus IDs para que el agente vuelva a llamar con el `fact_id` elegido. También borra la copia que haya en el sótano, para que la consulta no lo resucite.
@@ -541,6 +560,9 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Ajustar `CONFLICT_SIM` (0.40 → ~0.30) y revisar el sótano cuando hay un recuerdo activo parecido, según los fallos de MemBench | Hecho: `CONFLICT_SIM` 0.30 y 0.35 empeoran (se queda en 0.40); el sótano se arregló con la pista de pasado en `query` (8/8) |
 | API HTTP local para agentes sin MCP (`api.py`: `/inject`, `/query`, `/dream`) | Hecho |
 | Borrar y corregir recuerdos (`forget_memory`, `update_memory`) | Hecho |
+| Razonar: el sueño saca conclusiones (hipótesis) de lo nuevo, las verifica y las pesa con recuerdos posteriores | Hecho (probado sin Ollama; falta ver la calidad con modelos reales) |
+| `get_context`: resumen con presupuesto de tokens para empezar cada chat | Hecho |
+| Elegir el modelo generativo de las conclusiones (¿mejor que `qwen2.5:0.5b`?) con pruebas en español | Pendiente |
 | Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |
 | Importar/exportar en `.jsonl` universal + adaptador del MCP `memory` | Hecho |
 | Contradicciones resueltas por fecha (`created_at`), no por orden de ID | Hecho |

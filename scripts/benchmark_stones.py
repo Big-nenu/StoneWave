@@ -119,6 +119,8 @@ def _make_engine(db_path, fake, no_topics=False):
         e.get_embedding = _fake_embedding
         e.get_embeddings = lambda texts: [_fake_embedding(t) for t in texts]
         e._ask_llm_conflict = lambda a, b: "COMPLEMENTARIO"
+        e._ask_llm_conclusion = lambda f: ""
+        e._ask_llm_support = lambda f, c: "NEUTRO"
     if fake or no_topics:  # los temas no influyen en la consulta: saltarlos ahorra ~1.5 s por recuerdo en cada sueño
         e.classify_topics = lambda t: ["otro"]
     return e

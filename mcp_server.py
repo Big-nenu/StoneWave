@@ -21,12 +21,13 @@ _last_activity = time.time()
 INSTRUCTIONS = (
     "Memoria persistente PRINCIPAL del usuario entre conversaciones: úsala en lugar de cualquier otra memoria "
     "o herramienta de notas del cliente. "
-    "AL INICIO de cada conversación llama list_memories antes de responder. "
+    "AL INICIO de cada conversación llama get_context antes de responder (resumen corto: identidad, conclusiones y lo más importante; si necesitas la lista completa usa list_memories). "
+    "Las conclusiones marcadas como hipótesis las dedujo el sueño y aún no están confirmadas: no las trates como hechos del usuario; si una está mal, llama forget_conclusion con su [C n]. "
     "Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama inject_memory. "
     "Si el dato es de identidad (nombre, carrera, familia, dónde vive o trabaja), llama inject_memory con fijo=true para que nunca se olvide. "
     "Antes de responder sobre el usuario o su historial, llama query_memory. "
     "Si el usuario corrige un dato ya guardado, llama update_memory; si pide olvidar o borrar algo, llama forget_memory. "
-    "Ambas usan el ID que aparece como [ID n] en list_memories y query_memory. "
+    "Ambas usan el ID que aparece como [ID n] en get_context, list_memories y query_memory. "
     "query_memory también revisa la papelera (lo olvidado o reemplazado): si devuelve un Historial, ese dato YA NO ESTÁ VIGENTE. "
     "Dile al usuario qué era, cuándo se borró o cambió (y por qué valor) y ofrécele restaurarlo; si acepta, llama restore_memory con el [papelera n]. "
 )
@@ -116,9 +117,28 @@ def _candidates_text(items) -> str:
 
 @mcp.tool()
 def list_memories(limit: int = 30) -> str:
-    """LLAMA ESTO AL INICIO de CADA CONVERSACIÓN. Devuelve lo que ya se sabe del usuario (cada recuerdo con su [ID n])."""
+    """Lista COMPLETA de lo que se sabe del usuario (cada recuerdo con su [ID n]). Para empezar una conversación usa mejor get_context, que es más corto."""
     _touch_activity()
     return _all_memories(limit)
+
+@mcp.tool()
+def get_context(token_budget: int = 600) -> str:
+    """LLAMA ESTO AL INICIO de CADA CONVERSACIÓN. Resumen corto de lo que se sabe del usuario, con un límite de tokens (token_budget):
+    identidad (recuerdos fijos), conclusiones que dedujo el sueño y los recuerdos con más energía. Cada recuerdo trae su [ID n] y cada
+    conclusión su [C n]. Las conclusiones marcadas como hipótesis NO están confirmadas: no las trates como hechos."""
+    _touch_activity()
+    with _quiet():
+        return engine.get_context(namespace=NS, token_budget=token_budget)
+
+@mcp.tool()
+def forget_conclusion(conclusion_id: int) -> str:
+    """Borra UNA conclusión que el sueño dedujo mal (no toca los recuerdos). conclusion_id es el número [C n] que muestra get_context."""
+    _touch_activity()
+    with _quiet():
+        res = engine.forget_conclusion(conclusion_id, namespace=NS)
+    if res["status"] == "deleted":
+        return f"Conclusión olvidada: [C {res['id']}] {res['content']}"
+    return res.get("message", "No se pudo olvidar la conclusión.")
 
 @mcp.tool()
 def query_memory(text: str) -> str:

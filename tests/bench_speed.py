@@ -27,6 +27,8 @@ e.get_embedding = lambda t: rvec()
 e.get_embeddings = lambda ts: [rvec() for _ in ts]
 e.classify_topics = lambda t: ["otro"]
 e._ask_llm_conflict = lambda a, b: "COMPLEMENTARIO"
+e._ask_llm_conclusion = lambda f: ""
+e._ask_llm_support = lambda f, c: "NEUTRO"
 
 with sqlite3.connect(db) as c:
     now = time.time()

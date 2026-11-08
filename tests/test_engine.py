@@ -36,6 +36,8 @@ def make_engine(db=None, verdict="COMPLEMENTARIO"):
     e.get_embeddings = lambda texts: [fake_embedding(t) for t in texts]
     e.classify_topics = lambda t: ["otro"]
     e._ask_llm_conflict = lambda a, b: verdict
+    e._ask_llm_conclusion = lambda f: ""
+    e._ask_llm_support = lambda f, c: "NEUTRO"
     return e
 
 
@@ -826,6 +828,196 @@ def test_sync_se_niega_si_el_archivo_trae_lineas_invalidas():
     assert r["status"] == "blocked" and "conflicto" in r["message"], r
     with open(path, encoding="utf-8") as f:
         assert f.read() == before  # no se sobrescribio: no se pierde lo del otro equipo
+
+
+CONC = "Luis aprende mejor haciendo ejercicios prácticos"
+F1 = "Luis aprende mejor haciendo ejercicios prácticos de programación"
+F2 = "Luis aprende mejor haciendo ejercicios prácticos de matemáticas"
+F3 = "Luis aprende mejor haciendo ejercicios prácticos de física"
+F4 = "Luis aprende mejor haciendo ejercicios prácticos de química"
+
+
+def _con_conclusion(verdict="RESPALDA", text=CONC):
+    e = make_engine()
+    e._ask_llm_conclusion = lambda f: text
+    e._ask_llm_support = lambda f, c: verdict
+    return e
+
+
+def _una_sola_conclusion(e, text=CONC):
+    """El modelo propone la conclusion solo la primera vez (despues dice que no hay otra)."""
+    calls = []
+    e._ask_llm_conclusion = lambda f: (calls.append(1), text if len(calls) == 1 else "")[1]
+
+
+def _pendientes(e):
+    return rows(e.db_path, "SELECT COUNT(*) FROM facts WHERE reasoned=0")[0][0]
+
+
+def _envejecer_conclusiones(e, secs=5):
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE conclusions SET last_checked = last_checked - ?", (secs,))
+        c.commit()
+
+
+def test_razonar_inject_deja_pendiente_y_el_sueno_lo_marca():
+    e = make_engine()
+    e.inject(F1)
+    assert rows(e.db_path, "SELECT reasoned FROM facts") == [(0,)]  # guardar sigue siendo rapido: solo queda pendiente
+    out = e.dream()
+    assert "Conclusiones: 0 nuevas" in out, out
+    assert rows(e.db_path, "SELECT reasoned FROM facts") == [(1,)]
+
+
+def test_razonar_conclusion_nueva_nace_como_hipotesis():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.inject("Los gatos duermen mucho durante el día")
+    out = e.dream()
+    assert "1 nuevas" in out, out
+    c = e.list_conclusions()
+    assert len(c) == 1 and c[0]["content"] == CONC and c[0]["status"] == "hipotesis", c
+    assert abs(c[0]["energy"] - 0.3) < 1e-6 and len(c[0]["sources"]) == 2, c
+    assert _pendientes(e) == 0
+
+
+def test_razonar_conclusion_sin_respaldo_se_descarta():
+    e = _con_conclusion(verdict="NEUTRO")
+    e.inject(F1)
+    e.inject(F2)
+    out = e.dream()
+    assert "0 nuevas" in out and "1 descartadas" in out, out
+    assert e.list_conclusions() == []
+    assert _pendientes(e) == 0
+
+
+def test_razonar_modelo_caido_deja_los_recuerdos_pendientes():
+    e = _con_conclusion()
+    e._ask_llm_conclusion = lambda f: None  # el modelo no responde
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    assert _pendientes(e) == 2 and e.list_conclusions() == []
+    e._ask_llm_conclusion = lambda f: CONC  # ya responde: se reintenta solo
+    e.dream()
+    assert _pendientes(e) == 0 and len(e.list_conclusions()) == 1
+
+
+def test_razonar_hipotesis_se_confirma_con_recuerdos_nuevos():
+    e = _con_conclusion()
+    _una_sola_conclusion(e)
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    _envejecer_conclusiones(e)
+    e.inject(F3)
+    e.inject(F4)
+    out = e.dream()
+    assert "1 confirmadas" in out, out
+    c = e.list_conclusions()[0]
+    assert c["status"] == "confirmada" and c["support"] == 2 and c["energy"] >= 0.59, c
+    assert len(c["sources"]) == 4, c
+
+
+def test_razonar_hipotesis_contradicha_se_descarta():
+    e = _con_conclusion()
+    _una_sola_conclusion(e)
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    _envejecer_conclusiones(e)
+    e._ask_llm_support = lambda f, c: "CONTRADICE"
+    e.inject(F3)
+    e.inject(F4)
+    out = e.dream()
+    assert e.list_conclusions() == [] and "1 descartadas" in out, out
+
+
+def test_razonar_misma_conclusion_se_refuerza_no_se_duplica():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE facts SET reasoned=0")
+        c.commit()
+    out = e.dream()
+    assert "0 nuevas, 1 reforzadas" in out, out
+    c = e.list_conclusions()
+    assert len(c) == 1 and abs(c[0]["energy"] - 0.4) < 1e-6, c
+
+
+def test_razonar_conclusion_sin_recuerdos_de_origen_se_descarta():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    for fid in list(_ids(e).values()):
+        assert e.forget(fid)["status"] == "deleted"
+    e.dream()
+    assert e.list_conclusions() == []
+    assert rows(e.db_path, "SELECT * FROM conclusion_sources") == []
+
+
+def test_update_memory_vuelve_a_dejar_el_recuerdo_pendiente():
+    e = make_engine()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    fid = _ids(e)[F1]
+    assert e.update_memory(fid, F1 + " y estadística")["status"] == "updated"
+    assert rows(e.db_path, f"SELECT reasoned FROM facts WHERE id={fid}") == [(0,)]
+
+
+def test_razonar_se_puede_apagar():
+    old = mem_engine.CONCLUSIONS_ON
+    mem_engine.CONCLUSIONS_ON = False
+    try:
+        e = _con_conclusion()
+        e.inject(F1)
+        e.inject(F2)
+        out = e.dream()
+        assert "Conclusiones" not in out and e.list_conclusions() == [] and _pendientes(e) == 2, out
+    finally:
+        mem_engine.CONCLUSIONS_ON = old
+
+
+def test_forget_conclusion_y_clear_db():
+    e = _con_conclusion()
+    e.inject(F1)
+    e.inject(F2)
+    e.dream()
+    cid = e.list_conclusions()[0]["id"]
+    assert e.forget_conclusion(999)["status"] == "not_found"
+    assert e.forget_conclusion("x")["status"] == "error"
+    assert e.forget_conclusion(cid)["status"] == "deleted"
+    assert e.list_conclusions() == [] and len(e.list_facts()) == 2  # los recuerdos no se tocan
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("UPDATE facts SET reasoned=0")
+        c.commit()
+    e.dream()
+    assert len(e.list_conclusions()) == 1
+    e.clear_db(namespace="default")
+    assert e.list_conclusions() == [] and rows(e.db_path, "SELECT * FROM conclusion_sources") == []
+
+
+def test_get_context_respeta_el_presupuesto_y_marca_hipotesis():
+    e = make_engine()
+    assert e.get_context() == "La memoria está vacía todavía."
+    e.inject("Me llamo Luis Eduardo y vivo en Guadalajara", pinned=True)
+    for i in range(40):
+        e.inject(f"Recuerdo suelto numero {i} sobre cosas distintas {i * 7919} zeta{i}")
+    with sqlite3.connect(e.db_path) as c:
+        c.execute("INSERT INTO conclusions (namespace, content, energy, embedding, status, created_at, last_checked) "
+                  "VALUES ('default', 'Le gusta aprender haciendo', 0.3, '[]', 'hipotesis', 0, 0)")
+        c.commit()
+    txt = e.get_context(token_budget=200)
+    assert "Me llamo Luis Eduardo" in txt and "(hipótesis)" in txt and "sin mostrar" in txt, txt
+    assert len(txt) <= 200 * 4 + 120, len(txt)
+    assert txt.index("Identidad") < txt.index("Conclusiones") < txt.index("Recuerdos con más energía")
+    big = e.get_context(token_budget=8000)
+    assert "sin mostrar" not in big and big.count("[ID ") == len(e.list_facts()), big
 
 
 if __name__ == "__main__":

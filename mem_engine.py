@@ -84,6 +84,13 @@ DREAM_EVERY_HOURS = float(env_var("DREAM_HOURS", "12"))  # cada cuantas horas co
 BACKUP_KEEP_DAYS = int(env_var("BACKUP_DAYS", "7"))  # dias de respaldos diarios que se conservan (0 = sin respaldos)
 BACKUP_NAME = re.compile(r"^(?P<stem>.+)-(?P<day>\d{4}-\d{2}-\d{2})\.db$")
 ANGLE_WEIGHT = 0.5     # peso de las piedras-angulo frente a la pregunta completa
+CONCLUSIONS_ON = env_var("CONCLUSIONS", "true").lower() == "true"  # el sueño saca conclusiones (hipotesis) de los recuerdos
+CONCLUSION_MODEL = env_var("CONCLUSION_MODEL", SYNTHESIS_MODEL)  # modelo generativo que propone las conclusiones
+CONCLUSION_GROUPS = 8        # grupos de recuerdos que se razonan por sueño
+CONCLUSION_GROUP_SIZE = 4    # recuerdos por grupo: el pendiente + sus vecinos mas parecidos
+CONCLUSION_MAX_CHECKS = 20   # revisiones de respaldo (modelo de decision) por sueño al pesar las hipotesis
+CONCLUSION_START_ENERGY = 0.3  # una hipotesis nace con poca energia; sube si nuevos recuerdos la respaldan
+CONFIRM_SUPPORT = 2          # recuerdos nuevos que la respaldan para pasar de 'hipotesis' a 'confirmada'
 
 SYNC_FILENAME = "stonewave-memoria.jsonl"  # nombre del archivo compartido de `sync`
 
@@ -177,7 +184,7 @@ class StoneWaveEngine:
             row = conn.execute("SELECT value FROM meta WHERE key='embed_scheme'").fetchone()
             if row and row[0] == scheme:
                 return
-            n = conn.execute("SELECT (SELECT COUNT(*) FROM facts) + (SELECT COUNT(*) FROM archived_facts) + (SELECT COUNT(*) FROM trash)").fetchone()[0]
+            n = conn.execute("SELECT (SELECT COUNT(*) FROM facts) + (SELECT COUNT(*) FROM archived_facts) + (SELECT COUNT(*) FROM trash) + (SELECT COUNT(*) FROM conclusions)").fetchone()[0]
             if n == 0:
                 conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('embed_scheme', ?)", (scheme,))
                 conn.commit()
@@ -187,7 +194,7 @@ class StoneWaveEngine:
             shutil.copy2(self.db_path, bak)
         print(f"StoneWave: recalculando los embeddings de {n} recuerdos (respaldo en {bak})", file=sys.stderr)
         updates = []
-        for table in ("facts", "archived_facts", "trash"):
+        for table in ("facts", "archived_facts", "trash", "conclusions"):
             with closing(sqlite3.connect(self.db_path)) as conn:
                 rows = conn.execute(f"SELECT id, content FROM {table}").fetchall()
             for start in range(0, len(rows), 32):
@@ -236,6 +243,11 @@ class StoneWaveEngine:
                 cursor.execute("UPDATE facts SET created_at=COALESCE(last_used, ?)", (time.time(),))
             if "source" not in cols:
                 cursor.execute("ALTER TABLE facts ADD COLUMN source TEXT")
+            if "reasoned" not in cols:  # 0 = pendiente de razonar (el sueño le saca conclusiones)
+                cursor.execute("ALTER TABLE facts ADD COLUMN reasoned INTEGER DEFAULT 0")
+            cursor.execute("CREATE TABLE IF NOT EXISTS conclusions (id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT DEFAULT 'default', content TEXT, energy REAL, embedding TEXT, status TEXT DEFAULT 'hipotesis', support INTEGER DEFAULT 0, against INTEGER DEFAULT 0, created_at REAL, last_checked REAL)")
+            cursor.execute("CREATE TABLE IF NOT EXISTS conclusion_sources (conclusion_id INTEGER NOT NULL, fact_id INTEGER NOT NULL, PRIMARY KEY (conclusion_id, fact_id))")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_conclusions_namespace ON conclusions(namespace)")
             for topic in CLASSIFICATION_TOPICS:
                 cursor.execute("INSERT OR IGNORE INTO topics (topic_name, description) VALUES (?, ?)", (topic, f"Tema: {topic}"))
             conn.commit()
@@ -245,11 +257,15 @@ class StoneWaveEngine:
             cursor = conn.cursor()
             if namespace:
                 cursor.execute("DELETE FROM links WHERE fact_a IN (SELECT id FROM facts WHERE namespace=?) OR fact_b IN (SELECT id FROM facts WHERE namespace=?)", (namespace, namespace))
+                cursor.execute("DELETE FROM conclusion_sources WHERE conclusion_id IN (SELECT id FROM conclusions WHERE namespace=?)", (namespace,))
+                cursor.execute("DELETE FROM conclusions WHERE namespace=?", (namespace,))
                 cursor.execute("DELETE FROM facts WHERE namespace=?", (namespace,))
                 cursor.execute("DELETE FROM archived_facts WHERE namespace=?", (namespace,))
                 cursor.execute("DELETE FROM trash WHERE namespace=?", (namespace,))
             else:
                 cursor.execute("DELETE FROM links")
+                cursor.execute("DELETE FROM conclusion_sources")
+                cursor.execute("DELETE FROM conclusions")
                 cursor.execute("DELETE FROM facts")
                 cursor.execute("DELETE FROM archived_facts")
                 cursor.execute("DELETE FROM trash")
@@ -881,7 +897,7 @@ class StoneWaveEngine:
             old = conn.execute("SELECT energy, embedding FROM facts WHERE id=?", (fid,)).fetchone()
             if old and self._norm_text(row[0]) != self._norm_text(new_content):  # el texto viejo queda en la papelera como 'reemplazado'
                 self._to_trash(conn, namespace, row[0], old[0], old[1], "reemplazado", fid)
-            conn.execute("UPDATE facts SET content=?, embedding=?, last_used=? WHERE id=?", (new_content, json.dumps(vec), time.time(), fid))
+            conn.execute("UPDATE facts SET content=?, embedding=?, last_used=?, reasoned=0 WHERE id=?", (new_content, json.dumps(vec), time.time(), fid))
             conn.execute("DELETE FROM fact_topics WHERE fact_id=?", (fid,))  # el sueño lo vuelve a clasificar
             conn.execute("DELETE FROM links WHERE fact_a=? OR fact_b=?", (fid, fid))  # y a enlazar
         return {"status": "updated", "id": fid, "old": row[0], "new": new_content, "similar_to": twins[0] if twins else None}
@@ -1198,14 +1214,293 @@ class StoneWaveEngine:
         related = sum(1 for v in links.values() if v[1] == "relacionado")
         return contradictions, similar, related
 
+    # ------------------------------------------------------------------
+    # Conclusiones (hipotesis): el sueño razona sobre los recuerdos nuevos
+    # ------------------------------------------------------------------
+    def _ask_llm_conclusion(self, facts_list):
+        """Pide UNA conclusion a un modelo generativo. Devuelve el texto, '' si no hay conclusion clara, o None si el modelo no responde."""
+        facts_str = "\n".join(f"- {f}" for f in facts_list)
+        prompt = (
+            "Estos son recuerdos guardados sobre una persona:\n\n" + facts_str + "\n\n"
+            "Escribe UNA sola conclusión corta (una frase) que se desprenda de TODOS esos recuerdos juntos, por ejemplo un gusto, "
+            "un hábito o una forma de trabajar o aprender. No repitas un recuerdo tal cual y no inventes nada que no esté respaldado. "
+            "Si no hay una conclusión clara, responde exactamente: NINGUNA"
+        )
+        try:
+            r = requests.post(OLLAMA_GEN_URL, json={"model": CONCLUSION_MODEL, "prompt": prompt, "stream": False, "think": False}, timeout=60)
+            if r.status_code != 200:
+                return None
+            text = r.json().get("response", "").strip()
+        except Exception:
+            return None
+        line = next((l.strip(" -*•\t\"'") for l in text.splitlines() if l.strip()), "")
+        if not line or line.upper().startswith("NINGUNA") or len(line) < 15:
+            return ""
+        return line[:240]
+
+    def _ask_llm_support(self, fact, conclusion):
+        """Modelo de decision: ¿el recuerdo respalda la conclusion? Devuelve 'RESPALDA', 'CONTRADICE' o 'NEUTRO' (si no responde, 'NEUTRO')."""
+        try:
+            payload = {
+                "model": LLM_MODEL,
+                "state": f"Recuerdo: {fact}\nConclusión: {conclusion}",
+                "questions": {
+                    "relacion": {
+                        "type": "choice",
+                        "instructions": "Decide si el Recuerdo respalda la Conclusión, la contradice, o no dice nada claro sobre ella.",
+                        "criteria": {
+                            "respalda": "El Recuerdo es evidencia a favor de la Conclusión",
+                            "contradice": "El Recuerdo va en contra de la Conclusión",
+                            "neutro": "El Recuerdo no dice nada claro sobre la Conclusión"
+                        }
+                    }
+                }
+            }
+            r = requests.post(OLLAMA_SYSTEMONE_URL, json=payload, timeout=30)
+            if r.status_code == 200:
+                choice = r.json().get("answers", {}).get("relacion", {}).get("choice", "")
+                if choice in ("respalda", "contradice"):
+                    return choice.upper()
+        except Exception:
+            pass
+        return "NEUTRO"
+
+    def _conclusion_twin(self, vec, text, namespace):
+        """ID de una conclusion ya guardada que sea igual o casi igual a esta, o None."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute("SELECT id, content, embedding FROM conclusions WHERE namespace=?", (namespace,)).fetchall()
+        wanted = self._norm_text(text)
+        for cid, content, _blob in rows:
+            if self._norm_text(content) == wanted:
+                return cid
+        if np is None or not rows:
+            return None
+        _ids, _mat, _idx, mu = self._load_vectors(namespace, "facts")
+        q = self._unit(np.asarray(vec, dtype=np.float32), mu)
+        best, best_id = 0.0, None
+        for cid, _content, blob in rows:
+            try:
+                v = np.asarray(json.loads(blob), dtype=np.float32)
+            except Exception:
+                continue
+            if v.shape != q.shape:
+                continue
+            s = float(self._unit(v, mu) @ q)
+            if s > best:
+                best, best_id = s, cid
+        return best_id if best >= DUPLICATE_SIM else None
+
+    def _reason_pending(self, namespace, groups=None):
+        """Razona los recuerdos pendientes (reasoned=0): agrupa cada uno con sus vecinos mas parecidos, un modelo generativo
+        propone UNA conclusion y el modelo de decision comprueba que los recuerdos la respalden. Si pasa, queda guardada como
+        'hipotesis' con poca energia. Devuelve (nuevas, reforzadas, descartadas).
+        Si el modelo generativo no responde, el recuerdo sigue pendiente y se reintenta en el siguiente sueño."""
+        groups = CONCLUSION_GROUPS if groups is None else groups
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            pending = conn.execute(
+                "SELECT id, embedding FROM facts WHERE namespace=? AND COALESCE(reasoned,0)=0 "
+                "ORDER BY COALESCE(created_at, last_used, 0) LIMIT ?", (namespace, groups)).fetchall()
+        new = reinforced = dropped = 0
+        done, seen = [], set()
+        for fid, blob in pending:
+            try:
+                vec = json.loads(blob)
+            except Exception:
+                done.append(fid)
+                continue
+            ids, sims = self._sims(vec, namespace)
+            near = [i for i, _s in self._top(ids, sims, CONCLUSION_GROUP_SIZE, RELATED_SIM)]
+            if fid not in near:
+                near = [fid] + near[:CONCLUSION_GROUP_SIZE - 1]
+            group = tuple(sorted(near))
+            if len(group) < 2 or group in seen:  # sin vecinos no hay de donde concluir; si llegan vecinos, se agrupara con ellos
+                done.append(fid)
+                continue
+            seen.add(group)
+            facts = self._facts_by_id(list(group))
+            texts = [c for _i, c in facts]
+            concl = self._ask_llm_conclusion(texts)
+            if concl is None:
+                break  # el modelo no responde: no insistir; lo pendiente se reintenta en otro sueño
+            if not concl:
+                done.append(fid)
+                continue
+            cvec = self.get_embedding(concl)
+            if cvec is None:
+                break
+            done.append(fid)
+            verdicts = [self._ask_llm_support(t, concl) for t in texts]
+            # un modelo chico inventa: la conclusion solo pasa si la mayoria de los recuerdos la respalda y ninguno la contradice
+            if "CONTRADICE" in verdicts or verdicts.count("RESPALDA") < max(2, math.ceil(len(texts) / 2)):
+                dropped += 1
+                continue
+            twin = self._conclusion_twin(cvec, concl, namespace)
+            now = time.time()
+            with sqlite3.connect(self.db_path) as conn:
+                if twin is not None:
+                    conn.execute("UPDATE conclusions SET energy=MIN(1.0, COALESCE(energy, 0.3) + 0.1), last_checked=? WHERE id=?", (now, twin))
+                    cid = twin
+                    reinforced += 1
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO conclusions (namespace, content, energy, embedding, status, support, against, created_at, last_checked) "
+                        "VALUES (?, ?, ?, ?, 'hipotesis', 0, 0, ?, ?)",
+                        (namespace, concl, CONCLUSION_START_ENERGY, json.dumps(cvec), now, now))
+                    cid = cur.lastrowid
+                    new += 1
+                conn.executemany("INSERT OR IGNORE INTO conclusion_sources (conclusion_id, fact_id) VALUES (?, ?)", [(cid, i) for i, _c in facts])
+                conn.commit()
+        if done:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany("UPDATE facts SET reasoned=1 WHERE id=?", [(i,) for i in done])
+                conn.commit()
+        self._sync_version()  # solo cambiaron tablas sin vectores de la biblioteca
+        return new, reinforced, dropped
+
+    def _weigh_conclusions(self, namespace):
+        """Pesa las hipotesis con los recuerdos NUEVOS parecidos a ellas: los que las respaldan suben su energia, los que las
+        contradicen la bajan. Con CONFIRM_SUPPORT respaldos pasa a 'confirmada'; si la energia llega a casi 0, se descarta.
+        Una conclusion cuyos recuerdos de origen ya no existen tambien se descarta. Devuelve (confirmadas, descartadas)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM conclusion_sources WHERE fact_id NOT IN (SELECT id FROM facts)")
+            orphans = [r[0] for r in conn.execute(
+                "SELECT id FROM conclusions WHERE namespace=? AND id NOT IN (SELECT conclusion_id FROM conclusion_sources)", (namespace,))]
+            conn.executemany("DELETE FROM conclusions WHERE id=?", [(i,) for i in orphans])
+            conn.commit()
+            rows = conn.execute(
+                "SELECT id, content, embedding, COALESCE(energy, ?), status, COALESCE(support, 0), COALESCE(against, 0), "
+                "COALESCE(last_checked, created_at, 0) FROM conclusions WHERE namespace=?", (CONCLUSION_START_ENERGY, namespace)).fetchall()
+        dropped, confirmed, checks = len(orphans), 0, 0
+        for cid, content, blob, energy, status, support, against, last in rows:
+            if checks >= CONCLUSION_MAX_CHECKS:
+                break
+            try:
+                vec = json.loads(blob)
+            except Exception:
+                continue
+            ids, sims = self._sims(vec, namespace)
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                srcs = {r[0] for r in conn.execute("SELECT fact_id FROM conclusion_sources WHERE conclusion_id=?", (cid,))}
+                newer = {r[0] for r in conn.execute(
+                    "SELECT id FROM facts WHERE namespace=? AND COALESCE(created_at, last_used, 0) > ?", (namespace, last))}
+            candidates = [i for i, _s in self._top(ids, sims, 5, RELATED_SIM) if i in newer and i not in srcs]
+            if not candidates:
+                continue
+            energy, complete, supporters = float(energy), True, []
+            for fid, text in self._facts_by_id(candidates):
+                if checks >= CONCLUSION_MAX_CHECKS:
+                    complete = False
+                    break
+                checks += 1
+                verdict = self._ask_llm_support(text, content)
+                if verdict == "RESPALDA":
+                    energy, support = min(1.0, energy + 0.15), support + 1
+                    supporters.append(fid)
+                elif verdict == "CONTRADICE":
+                    energy, against = max(0.0, energy - 0.2), against + 1
+            with sqlite3.connect(self.db_path) as conn:
+                if energy <= 0.05:
+                    conn.execute("DELETE FROM conclusion_sources WHERE conclusion_id=?", (cid,))
+                    conn.execute("DELETE FROM conclusions WHERE id=?", (cid,))
+                    dropped += 1
+                else:
+                    if status != "confirmada" and support >= CONFIRM_SUPPORT and energy >= 0.6 - 1e-9:
+                        status = "confirmada"
+                        confirmed += 1
+                    elif status == "confirmada" and energy < 0.4:
+                        status = "hipotesis"
+                    conn.execute("UPDATE conclusions SET energy=?, status=?, support=?, against=?, last_checked=COALESCE(?, last_checked) WHERE id=?",
+                                 (energy, status, support, against, time.time() if complete else None, cid))
+                    conn.executemany("INSERT OR IGNORE INTO conclusion_sources (conclusion_id, fact_id) VALUES (?, ?)", [(cid, i) for i in supporters])
+                conn.commit()
+        self._sync_version()
+        return confirmed, dropped
+
+    def list_conclusions(self, namespace="default"):
+        """Conclusiones como dicts: id, content, energy, status ('hipotesis' | 'confirmada'), support, against, sources [IDs].
+        Las confirmadas primero y luego por energia."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id, content, COALESCE(energy, 0), status, COALESCE(support, 0), COALESCE(against, 0) FROM conclusions "
+                "WHERE namespace=? ORDER BY (status='confirmada') DESC, energy DESC, id DESC", (namespace,)).fetchall()
+            srcs = {}
+            for cid, fid in conn.execute("SELECT conclusion_id, fact_id FROM conclusion_sources"):
+                srcs.setdefault(cid, []).append(fid)
+        return [{"id": r[0], "content": r[1], "energy": float(r[2]), "status": r[3], "support": r[4], "against": r[5],
+                 "sources": sorted(srcs.get(r[0], []))} for r in rows]
+
+    def forget_conclusion(self, conclusion_id, namespace="default"):
+        """Borra una conclusion (la que el sueño dedujo mal). No toca los recuerdos. Devuelve {'status': 'deleted'|'not_found'|'error', ...}."""
+        try:
+            cid = int(conclusion_id)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "conclusion_id debe ser un numero."}
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT content FROM conclusions WHERE id=? AND namespace=?", (cid, namespace)).fetchone()
+            if row is None:
+                return {"status": "not_found", "message": f"No hay una conclusion con ID {cid} en '{namespace}'."}
+            conn.execute("DELETE FROM conclusion_sources WHERE conclusion_id=?", (cid,))
+            conn.execute("DELETE FROM conclusions WHERE id=?", (cid,))
+        return {"status": "deleted", "id": cid, "content": row[0]}
+
+    def get_context(self, namespace="default", token_budget=600):
+        """Resumen corto para arrancar una conversacion, con un limite de tokens (aprox. 4 caracteres por token):
+        identidad (fijos), conclusiones y los recuerdos con mas energia. Cada recuerdo trae su [ID n] y cada conclusion su [C n]."""
+        try:
+            budget = int(token_budget)
+        except (TypeError, ValueError):
+            budget = 600
+        budget = max(100, min(budget, 8000)) * 4
+        facts = self.list_facts(namespace)
+        concs = self.list_conclusions(namespace)
+        if not facts and not concs:
+            return "La memoria está vacía todavía."
+
+        def clip(t):
+            return t if len(t) <= 240 else t[:237] + "..."
+
+        out, state = [f"Contexto ({len(facts)} recuerdos, {len(concs)} conclusiones):"], {"used": 0, "hidden": 0}
+        state["used"] = len(out[0]) + 1
+
+        def section(title, lines, cap):
+            if not lines:
+                return
+            block, size, shown = [title], len(title) + 1, 0
+            for ln in lines:
+                if size + len(ln) + 1 > cap or state["used"] + size + len(ln) + 1 > budget:
+                    break
+                block.append(ln)
+                size += len(ln) + 1
+                shown += 1
+            state["hidden"] += len(lines) - shown
+            if shown:
+                out.append("\n".join(block))
+                state["used"] += size
+
+        section("Identidad (fijos):", [f"- [ID {f[0]}] {clip(f[1])}" for f in facts if f[3]], int(budget * 0.45))
+        section("Conclusiones (las marcadas como hipótesis aún no están confirmadas; no las trates como hechos):",
+                [f"- [C {c['id']}] {clip(c['content'])} ({'confirmada' if c['status'] == 'confirmada' else 'hipótesis'})" for c in concs],
+                int(budget * 0.25))
+        section("Recuerdos con más energía:", [f"- [ID {f[0]}] {clip(f[1])}" for f in facts if not f[3]], budget - state["used"])
+        if state["hidden"]:
+            out.append(f"(+{state['hidden']} más sin mostrar; usa query_memory para buscar un tema)")
+        return "\n".join(out)
+
     def dream(self, namespace="default"):
-        """Sueño: baja al sotano lo que no se usa, clasifica por temas y enlaza recuerdos. No reescribe nada."""
+        """Sueño: baja al sotano lo que no se usa, clasifica por temas, enlaza recuerdos y razona (conclusiones). No reescribe ningun recuerdo."""
         archived = self.decay(namespace)
         topics = self._classify_pending(namespace)
         contradictions, similar, related = self._link_facts(namespace)
         msg = (f"Sleeptime finalizado para {namespace}. Al sotano por desuso: {archived}. "
                 f"Al sotano por contradiccion: {contradictions}. Enlaces: {similar} similares, {related} relacionados. "
                 f"Temas clasificados: {topics}.")
+        if CONCLUSIONS_ON:  # razonar: el sueño pesa las hipotesis viejas y saca conclusiones de lo nuevo (nunca debe tirar el sueño)
+            try:
+                confirmed, w_drop = self._weigh_conclusions(namespace)
+                c_new, c_re, c_drop = self._reason_pending(namespace)
+                msg += f" Conclusiones: {c_new} nuevas, {c_re} reforzadas, {confirmed} confirmadas, {c_drop + w_drop} descartadas."
+            except Exception as ex:
+                print(f"StoneWave: error razonando conclusiones: {ex!r}", file=sys.stderr)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"last_dream:{namespace}", str(time.time())))
             conn.commit()

@@ -227,6 +227,10 @@ def run_doctor(namespace="default"):
             trash = _scalar(conn, "SELECT COUNT(*) FROM trash WHERE namespace=?", (namespace,))
             if trash is not None:
                 line(OK, f"En la papelera (olvidados/reemplazados): {trash}")
+            concl = _scalar(conn, "SELECT COUNT(*) FROM conclusions WHERE namespace=?", (namespace,))
+            if concl is not None:
+                pend = _scalar(conn, "SELECT COUNT(*) FROM facts WHERE namespace=? AND COALESCE(reasoned,0)=0", (namespace,))
+                line(OK, f"Conclusiones del sueno: {concl} (recuerdos pendientes de razonar: {pend})")
         others = _q(conn, "SELECT namespace, COUNT(*) FROM facts WHERE namespace != ? GROUP BY namespace", (namespace,)) or []
         if others:
             print("  Otros namespaces: " + ", ".join(f"{n} ({c})" for n, c in others))

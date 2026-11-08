@@ -17,7 +17,7 @@ de herramientas son los que valen.
 
 | Situación | Herramienta |
 |---|---|
-| Inicio de cada conversación | `list_memories` |
+| Inicio de cada conversación | `get_context` (resumen corto; `list_memories` es la lista completa) |
 | Antes de responder sobre el usuario o su historial | `query_memory` |
 | El usuario dice algo duradero (preferencia, decisión, proyecto) | `inject_memory` |
 | Dato de identidad (nombre, carrera, familia, dónde vive o trabaja) | `inject_memory` con `fijo=true` |
@@ -27,7 +27,9 @@ de herramientas son los que valen.
 | El usuario pide sincronizar la memoria (con Obsidian u otra compu) | `sync_memory`; después dile que Obsidian Git (o git) debe subir el archivo |
 | Pregunta por algo que borró o cambió | `query_memory`: el "Historial" que devuelve es lo olvidado/reemplazado (YA NO VIGENTE); díselo con la fecha y ofrécele restaurarlo (`restore_memory` con el `[papelera n]`). `empty_trash` solo si pide olvidarlo por completo |
 
-Los IDs salen como `[ID n]` en `list_memories` y `query_memory`. Si `forget_memory` por
+Los IDs salen como `[ID n]` en `get_context`, `list_memories` y `query_memory`. Las conclusiones salen como `[C n]` en `get_context`: las
+marcadas como *hipótesis* las dedujo el sueño y **no están confirmadas**, no las trates como hechos del usuario. Si una está mal,
+borra con `forget_conclusion`. Si `forget_memory` por
 texto devuelve varias coincidencias, no borra nada: vuelve a llamar con el ID elegido.
 
 ## Qué NO hacer

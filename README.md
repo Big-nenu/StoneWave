@@ -405,7 +405,7 @@ Es de **solo lectura** (no abre el motor ni modifica nada) e imprime un reporte 
 
 - **Base de datos:** ruta, conexión, tamaño de `memoria.db` y chequeo de integridad.
 - **Recuerdos:** activos vs. en el sótano (con el motivo: desuso o contradicción), fijos, enlaces y papelera.
-- **Ollama:** si responde, y si los modelos de embeddings (`embeddinggemma-2:270m`) y de decisión (`d1:3b`) están instalados y contestan de verdad, con su tiempo de respuesta.
+- **Ollama:** si responde, y si los modelos de embeddings (`embeddinggemma-2:270m`) y de decisión (`d1:3b`) están instalados y contestan de verdad, con su tiempo de respuesta. También revisa el modelo generativo (reflexión y conclusiones, `STONEWAVE_CONCLUSION_MODEL`): si falta o no responde es solo un aviso, porque el motor sigue funcionando sin él.
 - **Sueño:** fecha y hora del último ciclo (y si el automático está activado).
 - **Entorno:** si numpy está instalado.
 
@@ -585,6 +585,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | `get_context`: resumen con presupuesto de tokens para empezar cada chat | Hecho |
 | Limpieza de conclusiones viejas: las hipótesis sin respaldo caducan y hay un tope de 40 | Hecho |
 | Capa de modelos separada (`llm.py`): `Embedder`, `Generator` y `Decider` intercambiables | Hecho |
+| `doctor` revisa también el modelo generativo de las conclusiones | Hecho |
 | Elegir el modelo generativo de las conclusiones (¿mejor que `qwen2.5:0.5b`?) con pruebas en español | Pendiente |
 | Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |
 | Importar/exportar en `.jsonl` universal + adaptador del MCP `memory` | Hecho |

@@ -58,6 +58,18 @@ def _ping_embed():
         return False, (time.perf_counter() - t) * 1000, str(ex)[:70]
 
 
+def _ping_gen(model):
+    """Modelo generativo (reflexion y conclusiones): una peticion minima para ver que carga y responde."""
+    t = time.perf_counter()
+    try:
+        r = requests.post(me.OLLAMA_GEN_URL, json={"model": model, "prompt": "ping", "stream": False, "think": False,
+                                                   "options": {"num_predict": 1}}, timeout=90)
+        ok = r.status_code == 200
+        return ok, (time.perf_counter() - t) * 1000, ("responde" if ok else f"HTTP {r.status_code}")
+    except Exception as ex:
+        return False, (time.perf_counter() - t) * 1000, str(ex)[:70]
+
+
 def _ping_llm():
     t = time.perf_counter()
     payload = {"model": me.LLM_MODEL, "state": "ping",
@@ -259,10 +271,18 @@ def run_doctor(namespace="default"):
                 continue
             ok, ms, info = ping()
             line(OK if ok else BAD, f"{label}: {model} {info} ({ms:.0f} ms)", None if ok else _fix_model_not_responding(model, info))
-        synth = me.SYNTHESIS_MODEL
-        has = _installed(synth, names)
-        line(OK if has else WARN, f"Reflexion: {synth} " + ("instalado" if has else "no esta instalado (solo afecta a la reflexion)"),
-             None if has else _fix_model_missing(synth))
+        # modelos generativos (reflexion y conclusiones): si faltan o no responden es un aviso, el motor sigue funcionando sin ellos
+        synth, concl = me.SYNTHESIS_MODEL, me.CONCLUSION_MODEL
+        gens = [("Reflexion y conclusiones" if synth == concl else "Reflexion", synth,
+                 "la reflexion y las conclusiones" if synth == concl else "la reflexion")]
+        if concl != synth:
+            gens.append(("Conclusiones", concl, "las conclusiones"))
+        for label, model, affects in gens:
+            if not _installed(model, names):
+                line(WARN, f"{label}: el modelo '{model}' no esta instalado (solo afecta a {affects})", _fix_model_missing(model))
+                continue
+            ok, ms, info = _ping_gen(model)
+            line(OK if ok else WARN, f"{label}: {model} {info} ({ms:.0f} ms)", None if ok else _fix_model_not_responding(model, info))
 
     # ---------------- Sueño ----------------
     print("\nSueno (dream)")
@@ -279,6 +299,8 @@ def run_doctor(namespace="default"):
                 print(f"       otro namespace '{key.split(':', 1)[1]}': {datetime.fromtimestamp(float(value)).strftime('%Y-%m-%d %H:%M:%S')}")
     auto = me.env_var("AUTO_DREAM", "true").lower() == "true" and me.DREAM_EVERY_HOURS > 0
     print(f"       Sueno automatico: {'activado' if auto else 'desactivado'} (cada {me.DREAM_EVERY_HOURS:g} h, tras {me.env_var('DREAM_IDLE_MIN', '10')} min sin uso)")
+    print(f"       Conclusiones del sueno: {'activadas' if me.CONCLUSIONS_ON else 'apagadas (STONEWAVE_CONCLUSIONS=false)'}"
+          + (f" | modelo: {me.CONCLUSION_MODEL}" if me.CONCLUSIONS_ON else ""))
 
     # ---------------- Entorno ----------------
     print("\nEntorno")

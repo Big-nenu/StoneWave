@@ -29,9 +29,9 @@ class FakeResp:
 
 class FakeRequests:
     """Reemplaza a 'requests' dentro de doctor para simular a Ollama."""
-    def __init__(self, models=None, down=False, embed_status=200, llm_status=200):
+    def __init__(self, models=None, down=False, embed_status=200, llm_status=200, gen_status=200):
         self.models = ALL_MODELS if models is None else models
-        self.down, self.embed_status, self.llm_status = down, embed_status, llm_status
+        self.down, self.embed_status, self.llm_status, self.gen_status = down, embed_status, llm_status, gen_status
 
     def get(self, url, **kw):
         if self.down:
@@ -41,6 +41,8 @@ class FakeRequests:
     def post(self, url, **kw):
         if url == me.OLLAMA_EMBED_URL:
             return FakeResp(self.embed_status, {"embeddings": [[0.1, 0.2, 0.3]]})
+        if url == me.OLLAMA_GEN_URL:
+            return FakeResp(self.gen_status, {"response": "ok"})
         return FakeResp(self.llm_status, {"answers": {}})
 
 
@@ -133,6 +135,29 @@ def test_sin_numpy_es_aviso_no_grave():
     finally:
         me.np = saved
     assert rc == 0 and "RECOMENDACIONES" in out and "pip install numpy" in out and "SOLUCIONES SUGERIDAS" not in out, out
+
+
+def test_modelo_de_conclusiones_distinto_y_faltante_es_aviso():
+    old = me.CONCLUSION_MODEL
+    me.CONCLUSION_MODEL = "modelo-x:4b"
+    try:
+        rc, out = run(healthy_db(), FakeRequests())
+    finally:
+        me.CONCLUSION_MODEL = old
+    assert rc == 0 and "RECOMENDACIONES" in out and "SOLUCIONES SUGERIDAS" not in out, out
+    assert "Conclusiones: el modelo 'modelo-x:4b' no esta instalado" in out and "$ ollama pull modelo-x:4b" in out, out
+
+
+def test_modelo_generativo_instalado_pero_sin_respuesta_es_aviso():
+    rc, out = run(healthy_db(), FakeRequests(gen_status=500))
+    assert rc == 0 and "RECOMENDACIONES" in out and f"ollama stop {me.SYNTHESIS_MODEL}" in out, out
+    assert "SOLUCIONES SUGERIDAS" not in out, out
+
+
+def test_sano_muestra_el_modelo_de_conclusiones():
+    rc, out = run(healthy_db(), FakeRequests())
+    assert rc == 0 and f"Reflexion y conclusiones: {me.SYNTHESIS_MODEL} responde" in out, out
+    assert "Conclusiones del sueno: activadas" in out, out
 
 
 if __name__ == "__main__":

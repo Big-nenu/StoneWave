@@ -23,6 +23,7 @@ INSTRUCTIONS = (
     "o herramienta de notas del cliente. "
     "AL INICIO de cada conversación llama get_context antes de responder (resumen corto: identidad, conclusiones y lo más importante; si necesitas la lista completa usa list_memories). "
     "Las conclusiones marcadas como hipótesis las dedujo el sueño y aún no están confirmadas: no las trates como hechos del usuario; si una está mal, llama forget_conclusion con su [C n]. "
+    "Si hay STONEWAVE_NOTES, el sueño escribe solo cada conclusión como nota de Obsidian (con enlaces [[...]] a sus recuerdos de origen); si el usuario pide actualizar esas notas ya, llama export_notes. "
     "Cuando el usuario diga algo duradero sobre sí mismo, sus proyectos o sus decisiones, llama inject_memory. "
     "Si el dato es de identidad (nombre, carrera, familia, dónde vive o trabaja), llama inject_memory con fijo=true para que nunca se olvide. "
     "Antes de responder sobre el usuario o su historial, llama query_memory. "
@@ -312,6 +313,21 @@ def sync_memory() -> str:
         return res["message"]
     return (f"Sync listo: {res['new']} recuerdo(s) nuevo(s) desde el archivo, {res['existing']} ya existían. "
             f"El archivo tiene {res['total']} recuerdos ({res['path']}). Falta que Obsidian Git / git lo suba.")
+
+@mcp.tool()
+def export_notes() -> str:
+    """Escribe (o actualiza) en la carpeta de Obsidian (STONEWAVE_NOTES) una nota por cada conclusión, con enlaces [[...]] a los recuerdos
+    de donde salió y a otras conclusiones (carpetas `conclusiones` y `recuerdos`). Es solo una COPIA para ver: la memoria de StoneWave no
+    cambia y lo que se edite en las notas se sobrescribe. El sueño ya lo hace solo; usa esta herramienta SOLO si el usuario pide
+    actualizar las notas ahora. Subir las notas (Obsidian Git) lo hace Obsidian, no esta herramienta."""
+    _touch_activity()
+    with _quiet():
+        res = engine.export_notes(namespace=NS)
+    if res["status"] != "ok":
+        return res["message"]
+    extra = f" No se tocaron {len(res['skipped'])} nota(s) tuya(s) con el mismo nombre." if res["skipped"] else ""
+    return (f"Notas listas en {res['dir']}: {res['conclusions']} conclusión(es) y {res['memories']} recuerdo(s) de origen "
+            f"({res['written']} escritas, {res['unchanged']} sin cambios, {res['deleted']} borradas).{extra} Falta que Obsidian Git las suba.")
 
 if __name__ == "__main__":
     if mem_engine.BACKUP_KEEP_DAYS > 0:

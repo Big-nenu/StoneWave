@@ -301,6 +301,10 @@ def run_doctor(namespace="default"):
     print(f"       Sueno automatico: {'activado' if auto else 'desactivado'} (cada {me.DREAM_EVERY_HOURS:g} h, tras {me.env_var('DREAM_IDLE_MIN', '10')} min sin uso)")
     print(f"       Conclusiones del sueno: {'activadas' if me.CONCLUSIONS_ON else 'apagadas (STONEWAVE_CONCLUSIONS=false)'}"
           + (f" | modelo: {me.CONCLUSION_MODEL}" if me.CONCLUSIONS_ON else ""))
+    from notes import notes_dir
+    nd = notes_dir()
+    print("       Notas de Obsidian: " + (f"activadas en {nd}" + ("" if Path(nd).is_dir() else "  <-- ¡esa carpeta NO existe!") if nd
+                                          else "apagadas (define STONEWAVE_NOTES para escribirlas)"))
 
     # ---------------- Entorno ----------------
     print("\nEntorno")

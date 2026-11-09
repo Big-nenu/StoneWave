@@ -23,3 +23,6 @@ jobs:
 
       - name: Pruebas del motor (sin Ollama)
         run: python tests/test_engine.py
+
+      - name: Pruebas de las notas de Obsidian (sin Ollama)
+        run: python tests/test_notes.py

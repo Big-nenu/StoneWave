@@ -1373,6 +1373,81 @@ class StoneWaveEngine:
         scored.sort(key=lambda d: d["sim"], reverse=True)
         return scored[:limit]
 
+    def notes_data(self, namespace="default"):
+        """Datos para las notas de Obsidian: las conclusiones (con los IDs de sus recuerdos de origen), esos recuerdos y las
+        relaciones entre conclusiones ('comparten' recuerdos o 'parecida' en significado). Solo lee."""
+        concs = self.list_conclusions(namespace)
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            created = {r[0]: r[1] for r in conn.execute("SELECT id, created_at FROM conclusions WHERE namespace=?", (namespace,))}
+            ids = sorted({f for c in concs for f in c["sources"]})
+            facts = {}
+            if ids:
+                q = ",".join("?" * len(ids))
+                for fid, content, pinned, ts in conn.execute(
+                        f"SELECT id, content, COALESCE(pinned, 0), COALESCE(created_at, last_used) FROM facts WHERE namespace=? AND id IN ({q})",
+                        [namespace] + ids):
+                    facts[fid] = {"content": content, "pinned": bool(pinned), "created": ts, "topics": []}
+                for fid, topic in conn.execute(
+                        f"SELECT ft.fact_id, t.topic_name FROM fact_topics ft JOIN topics t ON t.id=ft.topic_id WHERE ft.fact_id IN ({q})", ids):
+                    if fid in facts:
+                        facts[fid]["topics"].append(topic)
+            vec_rows = conn.execute("SELECT id, embedding FROM conclusions WHERE namespace=?", (namespace,)).fetchall()
+        for c in concs:
+            c["created"] = created.get(c["id"])
+        rel = {c["id"]: [] for c in concs}
+        pairs = set()
+        for i, a in enumerate(concs):
+            for b in concs[i + 1:]:
+                n = len(set(a["sources"]) & set(b["sources"]))
+                if n:
+                    pairs.add((a["id"], b["id"]))
+                    rel[a["id"]].append({"id": b["id"], "kind": "comparten", "n": n})
+                    rel[b["id"]].append({"id": a["id"], "kind": "comparten", "n": n})
+        if np is not None and len(concs) > 1:
+            try:  # las que se parecen en significado aunque no compartan recuerdos (las 3 mas parecidas de cada una)
+                vecs = {}
+                for cid, blob in vec_rows:
+                    v = json.loads(blob)
+                    if v:
+                        vecs[cid] = v
+                dim = len(next(iter(vecs.values()))) if vecs else 0
+                keep = [cid for cid, v in vecs.items() if len(v) == dim]
+                if len(keep) > 1:
+                    _i, _m, _x, mu = self._load_vectors(namespace, "facts")
+                    if mu is not None and mu.shape[-1] != dim:
+                        mu = None
+                    M = self._unit(np.asarray([vecs[c] for c in keep], dtype=np.float32), mu)
+                    S = M @ M.T
+                    for i, cid in enumerate(keep):
+                        order = [j for j in np.argsort(-S[i]) if j != i and S[i][j] >= RELATED_SIM][:3]
+                        for j in order:
+                            other = keep[j]
+                            key = (min(cid, other), max(cid, other))
+                            if key in pairs:
+                                continue
+                            pairs.add(key)
+                            sim = round(float(S[i][j]), 2)
+                            rel[cid].append({"id": other, "kind": "parecida", "sim": sim})
+                            rel[other].append({"id": cid, "kind": "parecida", "sim": sim})
+            except Exception as ex:  # las notas salen igual, solo sin estos enlaces
+                print(f"StoneWave: no se pudo calcular la similitud entre conclusiones: {ex!r}", file=sys.stderr)
+        for lst in rel.values():
+            lst.sort(key=lambda r: (r["kind"] != "comparten", -(r.get("n") or 0), -(r.get("sim") or 0)))
+        return {"namespace": namespace, "conclusions": concs, "facts": facts, "relations": rel}
+
+    def export_notes(self, namespace="default", base_dir=None):
+        """Escribe las conclusiones como notas de Obsidian con wikilinks (ver notes.py). Solo escribe una COPIA para ver: la memoria
+        no cambia. base_dir: la carpeta (por defecto STONEWAVE_NOTES). Devuelve un dict con 'status' ('ok' | 'off' | 'error') y el resumen."""
+        import notes
+        base = base_dir or notes.notes_dir()
+        if not base:
+            return {"status": "off", "message": "Las notas de Obsidian estan apagadas: define STONEWAVE_NOTES (la carpeta donde escribirlas)."}
+        if not os.path.isdir(base):
+            return {"status": "error", "message": f"La carpeta de las notas no existe: {base}. Crea la carpeta (o corrige STONEWAVE_NOTES)."}
+        res = notes.write_notes(self.notes_data(namespace), base)
+        res.update(status="ok", dir=str(base))
+        return res
+
     def list_conclusions(self, namespace="default"):
         """Conclusiones como dicts: id, content, energy, status ('hipotesis' | 'confirmada'), support, against, sources [IDs].
         Las confirmadas primero y luego por energia."""
@@ -1460,6 +1535,14 @@ class StoneWaveEngine:
                         f"{c_drop + w_drop} descartadas, {expired} caducadas.")
             except Exception as ex:
                 print(f"StoneWave: error razonando conclusiones: {ex!r}", file=sys.stderr)
+        try:  # notas de Obsidian: solo si esta activado STONEWAVE_NOTES (es una copia para ver; nunca debe tirar el sueño)
+            import notes
+            if notes.notes_dir():
+                r = self.export_notes(namespace)
+                msg += (f" Notas de Obsidian: {r['written']} escritas, {r['unchanged']} sin cambios, {r['deleted']} borradas."
+                        if r["status"] == "ok" else f" Notas de Obsidian: {r['message']}")
+        except Exception as ex:
+            print(f"StoneWave: error escribiendo las notas de Obsidian: {ex!r}", file=sys.stderr)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"last_dream:{namespace}", str(time.time())))
             conn.commit()

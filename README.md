@@ -74,6 +74,24 @@ Las conclusiones **no cambian el resultado de `query_memory`** ni tocan los recu
 
 En vez de listar los 30 recuerdos con más energía, el agente llama `get_context(token_budget=600)` al inicio de cada chat. Devuelve un resumen que cabe en el presupuesto (≈4 caracteres por token), en este orden: **identidad** (recuerdos fijos, hasta el 45 %), **conclusiones** (hasta el 25 %) y **recuerdos con más energía** (lo que sobre). Si algo no cabe lo dice, y el agente usa `query_memory` para ese tema. No modifica nada. `list_memories` sigue existiendo para ver la lista completa.
 
+### Notas de Obsidian (conclusiones con wikilinks)
+
+Para **ver** las conclusiones en Obsidian, el sueño puede escribirlas como notas `.md` con enlaces `[[...]]`. Es opcional: define `STONEWAVE_NOTES` con una carpeta que ya exista (por ejemplo la misma de `STONEWAVE_SYNC`, dentro de tu bóveda).
+
+```
+<carpeta>/
+  conclusiones/   una nota por conclusión o hipótesis
+  recuerdos/      los recuerdos de donde salieron (solo esos)
+```
+
+- **Trazabilidad:** cada conclusión enlaza a los recuerdos de donde salió (`## Viene de`) y a otras conclusiones (`## Relacionada con`: las que comparten recuerdos o se parecen en significado). Cada recuerdo enlaza de vuelta a las conclusiones que ayudó a formar (`## Sirvió para`). Así puedes ir de una conclusión hasta su origen y ver toda la red en el Graph View.
+- **Ver solo las conclusiones:** las carpetas están separadas. En el Graph View, escribe `-path:recuerdos` en el filtro de búsqueda y los recuerdos desaparecen. Cada nota trae propiedades (`estado: hipotesis | confirmada`, `energia`...) y etiquetas (`#stonewave/hipotesis`, `#stonewave/confirmada`, `#stonewave/recuerdo`) para filtrar o colorear por grupos.
+- **StoneWave es la fuente de verdad:** las notas son una copia de solo lectura. StoneWave solo las escribe y nunca las lee, así que lo que edites en Obsidian no cambia la memoria y el siguiente sueño lo sobrescribe. Para cambiar una conclusión usa `forget_conclusion`; su nota desaparece en la siguiente exportación.
+- **Tus notas están a salvo:** solo se tocan archivos con la marca `generado_por: "stonewave"` escritos desde el mismo equipo. Una nota tuya con el mismo nombre se respeta (se avisa) y las notas que escribió otra compu que comparte la carpeta no se borran.
+- **Nombres:** `texto de la conclusión (a1b2c3).md`. Las 6 letras salen del texto, así que son las mismas en Casa y Oficina aunque los IDs de la base de datos sean distintos.
+- **Cuándo se escriben:** al final de cada sueño, o a pedido con `python mem_cli.py notes [carpeta]` o la herramienta MCP `export_notes`. Si no cambió nada no se reescribe ningún archivo, así no se ensucia el historial de git.
+- **Privacidad:** solo salen los recuerdos que originaron alguna conclusión (el resto no sale de la memoria). Las notas llevan el texto completo del recuerdo, así que en tu bóveda (y en el repo que la sincroniza) quedan igual de expuestas que el `.jsonl` del sync.
+
 ### Capa de modelos (`llm.py`)
 
 Todo lo que habla con un modelo vive en `llm.py`, en tres piezas independientes, cada una con su modelo:
@@ -267,6 +285,7 @@ Puedes borrar o mover el proyecto sin perder tus recuerdos.
 | `STONEWAVE_SYNTHESIS_MODEL` | `qwen2.5:0.5b` | Modelo que reflexiona (y que inventa los ángulos si activas `STONES_LLM`) |
 | `STONEWAVE_CONCLUSIONS` | `true` | El sueño razona y saca conclusiones de los recuerdos nuevos (ver «Conclusiones»). `false` lo apaga |
 | `STONEWAVE_CONCLUSION_MODEL` | el de síntesis | Modelo **generativo** que propone las conclusiones (con uno de 4B o más salen mejor que con `qwen2.5:0.5b`) |
+| `STONEWAVE_NOTES` | (apagado) | Carpeta de Obsidian donde el sueño escribe las conclusiones como notas con wikilinks (ver «Notas de Obsidian»). Debe existir; `off` lo apaga |
 | `STONEWAVE_STONES` | `5` | Piedras por consulta |
 | `STONEWAVE_RESULTS` | `3` | Máximo de recuerdos que devuelve una consulta |
 | `STONEWAVE_CONFLICT_SIM` | `0.40` | Similitud mínima para que el sueño revise si dos recuerdos se contradicen (más bajo = revisa más pares, más lento) |
@@ -293,6 +312,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `get_context` | Resumen corto con límite de tokens: identidad, conclusiones y lo más importante (se llama al inicio de cada chat) |
 | `list_memories` | Lista completa de lo que ya se sabe del usuario, con sus IDs |
 | `forget_conclusion` | Borra una conclusión que el sueño dedujo mal (por su `[C n]`); no toca los recuerdos |
+| `export_notes` | Escribe o actualiza las notas de Obsidian con las conclusiones (el sueño ya lo hace solo si hay `STONEWAVE_NOTES`) |
 | `query_memory` | Busca recuerdos relacionados con un tema (y avisa, como historial, si el tema estaba en la papelera; también muestra aparte las conclusiones parecidas) |
 | `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |
 | `force_dream` | Sueño: archiva lo que no se usa, clasifica por tema y enlaza recuerdos parecidos |
@@ -553,6 +573,7 @@ Los casos están en `tests/casos/` (`pares_decision.jsonl`, `respaldo_conclusion
 mcp_server.py    # servidor MCP (StoneWave)
 mem_engine.py    # motor de memoria (inyectar, consultar, soñar, reflexionar)
 llm.py           # capa de modelos: Embedder, Generator y Decider (lo unico que habla con Ollama)
+notes.py         # notas de Obsidian: exporta las conclusiones con wikilinks (solo escribe, nunca lee)
 mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor, import, export)
 doctor.py        # reporte de salud de la memoria (solo lectura)
 setup_wizard.py  # `mem_cli.py setup`: revisa la instalación e imprime la config MCP
@@ -599,6 +620,7 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Limpieza de conclusiones viejas: las hipótesis sin respaldo caducan y hay un tope de 40 | Hecho |
 | Capa de modelos separada (`llm.py`): `Embedder`, `Generator` y `Decider` intercambiables | Hecho |
 | `doctor` revisa también el modelo generativo de las conclusiones | Hecho |
+| Notas de Obsidian: cada conclusión como nota con wikilinks a sus recuerdos de origen y a otras conclusiones, en carpetas separadas (StoneWave sigue siendo la fuente de verdad) | Hecho |
 | Elegir el modelo generativo de las conclusiones con pruebas en español | Hecho: `qwen2.5:0.5b` sale muy mal y `nemotron-3.5-bolt:e4b` es el mejor equilibrio (ver `docs/pruebas_modelos.md`) |
 | Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |
 | Importar/exportar en `.jsonl` universal + adaptador del MCP `memory` | Hecho |
@@ -625,6 +647,7 @@ python tests/test_api.py
 python tests/test_doctor.py
 python tests/test_setup.py
 python tests/test_benchmark.py
+python tests/test_notes.py
 ```
 
 Con Ollama encendido también: `python tests/real_test.py` y `python scripts/benchmark_stones.py`.

@@ -22,7 +22,7 @@ def _print_import_summary(s):
 
 def main():
     parser = argparse.ArgumentParser(description="StoneWave CLI - Gestor de Memoria Semántica")
-    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear", "doctor", "setup", "sync", "import", "export", "bridge"],
+    parser.add_argument("command", choices=["inject", "query", "dream", "reflect", "clear", "doctor", "setup", "sync", "import", "export", "bridge", "notes"],
                         help="Comando a ejecutar (doctor = reporte de salud; import/export = recuerdos en .jsonl)")
     parser.add_argument("text", nargs="?", help="Texto para inyectar o consultar; o el archivo .jsonl para import / export")
     parser.add_argument("text2", nargs="?", help="Segundo tema (solo para el comando bridge)")
@@ -159,6 +159,16 @@ def main():
             sys.exit(1)
         print(f"Sync listo: {res['new']} recuerdo(s) nuevo(s) desde el archivo, {res['existing']} ya existian. "
               f"El archivo ahora tiene {res['total']} recuerdos: {res['path']}")
+
+    elif args.command == "notes":
+        res = engine.export_notes(namespace=ns, base_dir=args.text)
+        if res["status"] != "ok":
+            print(res["message"])
+            sys.exit(1)
+        print(f"Notas listas en {res['dir']}: {res['conclusions']} conclusiones y {res['memories']} recuerdos de origen "
+              f"({res['written']} escritas, {res['unchanged']} sin cambios, {res['deleted']} borradas).")
+        if res["skipped"]:
+            print(f"No se tocaron {len(res['skipped'])} nota(s) tuya(s) con el mismo nombre: " + ", ".join(res["skipped"][:5]))
 
     elif args.command == "export":
         if not args.text:

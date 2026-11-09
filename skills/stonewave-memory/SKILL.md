@@ -23,6 +23,7 @@ de herramientas son los que valen.
 | Dato de identidad (nombre, carrera, familia, dónde vive o trabaja) | `inject_memory` con `fijo=true` |
 | Un dato guardado cambió o estaba mal | `update_memory` (con el `[ID n]`) |
 | El usuario pide olvidar algo | `forget_memory` (con el `[ID n]`) |
+| Pide actualizar ya las notas de Obsidian con las conclusiones | `export_notes` (el sueño ya las escribe solo si hay `STONEWAVE_NOTES`) |
 | El usuario pregunta qué relación hay entre dos temas | `bridge_memory` (devuelve los recuerdos que conectan ambos) |
 | El usuario pide sincronizar la memoria (con Obsidian u otra compu) | `sync_memory`; después dile que Obsidian Git (o git) debe subir el archivo |
 | Pregunta por algo que borró o cambió | `query_memory`: el "Historial" que devuelve es lo olvidado/reemplazado (YA NO VIGENTE); díselo con la fecha y ofrécele restaurarlo (`restore_memory` con el `[papelera n]`). `empty_trash` solo si pide olvidarlo por completo |

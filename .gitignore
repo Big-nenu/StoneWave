@@ -10,3 +10,6 @@ __pycache__/
 *.bak2
 data/
 
+# Resultados de las pruebas de modelos (se vuelven a generar)
+bench_*.json
+

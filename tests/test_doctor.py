@@ -80,6 +80,11 @@ def test_todo_sano_no_pide_soluciones():
     assert rc == 0 and "SOLUCIONES SUGERIDAS" not in out and "Todo en orden" in out, out
 
 
+def test_muestra_derivadas_e_historial_de_conclusiones():
+    rc, out = run(healthy_db(), FakeRequests())
+    assert "Conclusiones derivadas de otras: 0" in out and "Historial de conclusiones" in out, out
+
+
 def test_ollama_caido():
     rc, out = run(healthy_db(), FakeRequests(down=True))
     assert rc == 1 and "SOLUCIONES SUGERIDAS" in out, out

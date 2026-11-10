@@ -243,6 +243,10 @@ def run_doctor(namespace="default"):
             if concl is not None:
                 pend = _scalar(conn, "SELECT COUNT(*) FROM facts WHERE namespace=? AND COALESCE(reasoned,0)=0", (namespace,))
                 line(OK, f"Conclusiones del sueno: {concl} (recuerdos pendientes de razonar: {pend})")
+                derived = _scalar(conn, "SELECT COUNT(DISTINCT child_id) FROM conclusion_parents WHERE child_id IN (SELECT id FROM conclusions WHERE namespace=?)", (namespace,))
+                hist = _scalar(conn, "SELECT COUNT(*) FROM conclusion_history WHERE namespace=?", (namespace,))
+                if derived is not None and hist is not None:
+                    line(OK, f"Conclusiones derivadas de otras: {derived} | Historial de conclusiones (caducadas o reemplazadas): {hist}")
         others = _q(conn, "SELECT namespace, COUNT(*) FROM facts WHERE namespace != ? GROUP BY namespace", (namespace,)) or []
         if others:
             print("  Otros namespaces: " + ", ".join(f"{n} ({c})" for n, c in others))

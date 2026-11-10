@@ -141,6 +141,25 @@ def forget_conclusion(conclusion_id: int) -> str:
         return f"Conclusión olvidada: [C {res['id']}] {res['content']}"
     return res.get("message", "No se pudo olvidar la conclusión.")
 
+@mcp.tool()
+def conclusion_history(limit: int = 10) -> str:
+    """Conclusiones que YA NO cuentan: caducaron, las contradijeron recuerdos nuevos o las reemplazó otra más reciente. Úsala SOLO si el usuario
+    pregunta qué pensaba StoneWave antes, por qué cambió una conclusión o por qué ya no aparece. Nada de esto está vigente ni son hechos del usuario."""
+    _touch_activity()
+    with _quiet():
+        hist = engine.list_conclusion_history(namespace=NS)
+        live = {c["id"]: c["content"] for c in engine.list_conclusions(namespace=NS)}
+    if not hist:
+        return "El historial de conclusiones está vacío."
+    why = {"caducada": "caducó sin respaldo nuevo", "contradicha": "la contradijeron recuerdos nuevos", "reemplazada": "la reemplazó otra",
+           "excedente": "salió por el tope de hipótesis", "sin_origen": "ya no existen sus recuerdos de origen"}
+    out = []
+    for h in hist[:max(1, limit)]:
+        extra = f"; ahora: {live[h['replaced_by']]}" if h["replaced_by"] in live else ""
+        out.append(f"- {h['content']} ({why.get(h['reason'], h['reason'])} el {_when(h['ended'])}{extra})")
+    more = f"\n(Se muestran {len(out)} de {len(hist)})" if len(hist) > len(out) else ""
+    return "Historial de conclusiones (YA NO VIGENTES):\n" + "\n".join(out) + more
+
 def _conclusions_text(items) -> str:
     """Conclusiones que dedujo el sueño y se parecen a la pregunta. Las hipotesis NO son hechos del usuario."""
     if not items:

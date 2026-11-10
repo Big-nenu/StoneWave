@@ -66,7 +66,10 @@ Guardar sigue siendo rápido (sin modelos): `inject_memory` solo deja el recuerd
 2. **Se verifica.** El modelo de decisión comprueba, recuerdo por recuerdo, que lo respalden. Solo pasa si la mayoría la respalda y ninguno la contradice.
 3. **Nace como hipótesis** con poca energía (0.3), ligada a los recuerdos de donde salió. Una igual que ya existía solo se refuerza.
 4. **Se pesa con lo nuevo.** En los siguientes sueños, los recuerdos nuevos parecidos a la hipótesis la respaldan (sube su energía) o la contradicen (baja). Con 2 respaldos pasa a **confirmada**; si su energía llega a casi 0, o ya no existen los recuerdos de origen, se descarta.
-5. **Caducan.** Una hipótesis que no recibe respaldo nuevo pierde energía con los días (×0.97 por día: de 0.3 a 0.1 en unos 36 días) y, bajo 0.1, caduca y se borra; los recuerdos no se tocan. Las confirmadas se desgastan mucho más despacio (×0.995 por día) y, si bajan de 0.4, vuelven a ser hipótesis. Se guardan como máximo 40 hipótesis por namespace (se van las de menos energía).
+5. **Caducan.** Una hipótesis que no recibe respaldo nuevo pierde energía con los días (×0.97 por día: de 0.3 a 0.1 en unos 36 días) y, bajo 0.1, caduca: sale de las conclusiones vivas y pasa al **historial** (ver abajo); los recuerdos no se tocan. Las confirmadas se desgastan mucho más despacio (×0.995 por día) y, si bajan de 0.4, vuelven a ser hipótesis. Se guardan como máximo 40 hipótesis por namespace (se van las de menos energía, al historial).
+6. **Se razona sobre las conclusiones.** Cuando hay dos o más conclusiones **confirmadas** parecidas, el sueño las junta (hasta 3) y pide una conclusión nueva que se desprenda de todas. Pasa por la misma verificación y nace como hipótesis (0.3), ligada a sus **padres** (tabla `conclusion_parents`) y con la unión de sus recuerdos de origen. Solo se parte de lo confirmado, no de hipótesis. Se intentan hasta 3 grupos por sueño, y cada grupo se intenta una sola vez.
+
+**Historial.** Lo que caduca, sale por el tope, se descarta (la contradijeron recuerdos nuevos o ya no existen sus recuerdos) o es **reemplazado** no se pierde: queda en la tabla `conclusion_history` con el motivo, la fecha y sus recuerdos de origen (hasta 200 por namespace). Una conclusión nueva reemplaza a una hipótesis parecida cuando la contradice (el modelo tiene que decirlo en los dos órdenes); entonces la vieja queda enlazada a la nueva. Las confirmadas no se reemplazan así. Lo que tú mandas olvidar con `forget_conclusion` **no** se guarda en el historial. En Python: `engine.list_conclusion_history()`.
 
 Las conclusiones **no cambian el resultado de `query_memory`** ni tocan los recuerdos: viven aparte (tablas `conclusions` y `conclusion_sources`). Salen en `get_context` y, cuando se parecen a la pregunta, `query_memory` las muestra en una sección aparte (`[C n]`). Siempre marcadas como *hipótesis* hasta que se confirman. Si una está mal, `forget_conclusion` la borra. Cada sueño razona hasta 8 grupos y hace hasta 20 revisiones de respaldo. Si el modelo no responde, los recuerdos siguen pendientes y se reintenta en el siguiente sueño. Con modelos chicos las conclusiones pueden salir flojas: para eso existe la verificación y la etiqueta de hipótesis. Se apaga con `STONEWAVE_CONCLUSIONS=false`. Las conclusiones no se exportan al `.jsonl`.
 
@@ -82,9 +85,12 @@ Para **ver** las conclusiones en Obsidian, el sueño puede escribirlas como nota
 <carpeta>/
   conclusiones/   una nota por conclusión o hipótesis
   recuerdos/      los recuerdos de donde salieron (solo esos)
+  historial/      conclusiones que caducaron o se reemplazaron (solo si hay)
 ```
 
 - **Trazabilidad:** cada conclusión enlaza a los recuerdos de donde salió (`## Viene de`) y a otras conclusiones (`## Relacionada con`: las que comparten recuerdos o se parecen en significado). Cada recuerdo enlaza de vuelta a las conclusiones que ayudó a formar (`## Sirvió para`). Así puedes ir de una conclusión hasta su origen y ver toda la red en el Graph View.
+- **Conclusiones que salen de otras:** una conclusión derivada enlaza a sus padres (`## Deriva de`) y cada padre enlaza a ella (`## De aquí nacieron`). Ese par ya no se repite en `## Relacionada con`.
+- **Historial:** cada conclusión que caducó o se reemplazó tiene su nota en `historial/` (`estado: caducada | contradicha | reemplazada | excedente | sin_origen`, etiqueta `#stonewave/historial`). La reemplazada enlaza a la nueva (`## Reemplazada por`) y la nueva a la vieja (`## Reemplazó a`). Si la caducada tenía hijas, ellas siguen apuntando a su nota. Los recuerdos de origen también enlazan a ellas. Para ocultarlo en el Graph View: `-path:historial` (junto con `-path:recuerdos` si quieres solo las vivas).
 - **Ver solo las conclusiones:** las carpetas están separadas. En el Graph View, escribe `-path:recuerdos` en el filtro de búsqueda y los recuerdos desaparecen. Cada nota trae propiedades (`estado: hipotesis | confirmada`, `energia`...) y etiquetas (`#stonewave/hipotesis`, `#stonewave/confirmada`, `#stonewave/recuerdo`) para filtrar o colorear por grupos.
 - **StoneWave es la fuente de verdad:** las notas son una copia de solo lectura. StoneWave solo las escribe y nunca las lee, así que lo que edites en Obsidian no cambia la memoria y el siguiente sueño lo sobrescribe. Para cambiar una conclusión usa `forget_conclusion`; su nota desaparece en la siguiente exportación.
 - **Tus notas están a salvo:** solo se tocan archivos con la marca `generado_por: "stonewave"` escritos desde el mismo equipo. Una nota tuya con el mismo nombre se respeta (se avisa) y las notas que escribió otra compu que comparte la carpeta no se borran.
@@ -573,7 +579,7 @@ Los casos están en `tests/casos/` (`pares_decision.jsonl`, `respaldo_conclusion
 mcp_server.py    # servidor MCP (StoneWave)
 mem_engine.py    # motor de memoria (inyectar, consultar, soñar, reflexionar)
 llm.py           # capa de modelos: Embedder, Generator y Decider (lo unico que habla con Ollama)
-notes.py         # notas de Obsidian: exporta las conclusiones con wikilinks (solo escribe, nunca lee)
+notes.py         # notas de Obsidian: exporta las conclusiones (y su historial) con wikilinks (solo escribe, nunca lee)
 mem_cli.py       # CLI (inject, query, dream, reflect, clear, doctor, import, export)
 doctor.py        # reporte de salud de la memoria (solo lectura)
 setup_wizard.py  # `mem_cli.py setup`: revisa la instalación e imprime la config MCP
@@ -621,6 +627,8 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Capa de modelos separada (`llm.py`): `Embedder`, `Generator` y `Decider` intercambiables | Hecho |
 | `doctor` revisa también el modelo generativo de las conclusiones | Hecho |
 | Notas de Obsidian: cada conclusión como nota con wikilinks a sus recuerdos de origen y a otras conclusiones, en carpetas separadas (StoneWave sigue siendo la fuente de verdad) | Hecho |
+| Conclusiones derivadas de otras confirmadas (con enlace `Deriva de` / `De aquí nacieron` en las notas) | Hecho |
+| Historial de conclusiones caducadas, descartadas o reemplazadas (con enlace a la que las reemplazó) | Hecho |
 | Elegir el modelo generativo de las conclusiones con pruebas en español | Hecho: `qwen2.5:0.5b` sale muy mal y `nemotron-3.5-bolt:e4b` es el mejor equilibrio (ver `docs/pruebas_modelos.md`) |
 | Papelera (`trash`): lo olvidado/reemplazado queda como historial consultable; `empty_trash` para borrarlo de verdad | Hecho |
 | Importar/exportar en `.jsonl` universal + adaptador del MCP `memory` | Hecho |
@@ -648,6 +656,7 @@ python tests/test_doctor.py
 python tests/test_setup.py
 python tests/test_benchmark.py
 python tests/test_notes.py
+python tests/test_historial.py
 ```
 
 Con Ollama encendido también: `python tests/real_test.py` y `python scripts/benchmark_stones.py`.

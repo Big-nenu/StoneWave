@@ -73,6 +73,9 @@ CONCLUSION_DECAY = 0.97      # una hipotesis sin respaldo nuevo conserva este fa
 CONCLUSION_CONFIRMED_DECAY = 0.995  # una confirmada se desgasta mucho mas despacio
 CONCLUSION_FLOOR = 0.1       # una hipotesis con menos energia que esto caduca (se borra)
 CONCLUSION_MAX = 40          # maximo de hipotesis por namespace; si hay mas, se van las de menos energia
+DERIVE_GROUP_SIZE = 3       # conclusiones confirmadas que se juntan para derivar una conclusion nueva (la semilla + sus vecinas)
+DERIVE_PER_DREAM = 3        # cuantas derivaciones se intentan por sueno
+HISTORY_MAX = 200           # maximo de conclusiones caducadas o reemplazadas que se recuerdan por namespace
 CONFIRM_SUPPORT = 2          # recuerdos nuevos que la respaldan para pasar de 'hipotesis' a 'confirmada'
 
 SYNC_FILENAME = "stonewave-memoria.jsonl"  # nombre del archivo compartido de `sync`
@@ -242,6 +245,11 @@ class StoneWaveEngine:
             if "last_decay" not in ccols:  # desde cuando se cuenta el desgaste de la energia
                 cursor.execute("ALTER TABLE conclusions ADD COLUMN last_decay REAL")
                 cursor.execute("UPDATE conclusions SET last_decay=COALESCE(created_at, ?)", (time.time(),))
+            cursor.execute("CREATE TABLE IF NOT EXISTS conclusion_parents (child_id INTEGER NOT NULL, parent_id INTEGER NOT NULL, PRIMARY KEY (child_id, parent_id))")
+            cursor.execute("CREATE TABLE IF NOT EXISTS conclusion_history (id INTEGER PRIMARY KEY AUTOINCREMENT, orig_id INTEGER, namespace TEXT DEFAULT 'default', content TEXT, status TEXT, energy REAL, support INTEGER, against INTEGER, reason TEXT, replaced_by INTEGER, created_at REAL, ended_at REAL, sources TEXT)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_history_namespace ON conclusion_history(namespace)")
+            if "derived" not in ccols:  # 1 = ya se intento derivar una conclusion nueva a partir de ella
+                cursor.execute("ALTER TABLE conclusions ADD COLUMN derived INTEGER DEFAULT 0")
             for topic in CLASSIFICATION_TOPICS:
                 cursor.execute("INSERT OR IGNORE INTO topics (topic_name, description) VALUES (?, ?)", (topic, f"Tema: {topic}"))
             conn.commit()
@@ -252,6 +260,8 @@ class StoneWaveEngine:
             if namespace:
                 cursor.execute("DELETE FROM links WHERE fact_a IN (SELECT id FROM facts WHERE namespace=?) OR fact_b IN (SELECT id FROM facts WHERE namespace=?)", (namespace, namespace))
                 cursor.execute("DELETE FROM conclusion_sources WHERE conclusion_id IN (SELECT id FROM conclusions WHERE namespace=?)", (namespace,))
+                cursor.execute("DELETE FROM conclusion_parents WHERE child_id IN (SELECT id FROM conclusions WHERE namespace=?) OR parent_id IN (SELECT id FROM conclusions WHERE namespace=?)", (namespace, namespace))
+                cursor.execute("DELETE FROM conclusion_history WHERE namespace=?", (namespace,))
                 cursor.execute("DELETE FROM conclusions WHERE namespace=?", (namespace,))
                 cursor.execute("DELETE FROM facts WHERE namespace=?", (namespace,))
                 cursor.execute("DELETE FROM archived_facts WHERE namespace=?", (namespace,))
@@ -259,6 +269,8 @@ class StoneWaveEngine:
             else:
                 cursor.execute("DELETE FROM links")
                 cursor.execute("DELETE FROM conclusion_sources")
+                cursor.execute("DELETE FROM conclusion_parents")
+                cursor.execute("DELETE FROM conclusion_history")
                 cursor.execute("DELETE FROM conclusions")
                 cursor.execute("DELETE FROM facts")
                 cursor.execute("DELETE FROM archived_facts")
@@ -1249,6 +1261,8 @@ class StoneWaveEngine:
                     new += 1
                 conn.executemany("INSERT OR IGNORE INTO conclusion_sources (conclusion_id, fact_id) VALUES (?, ?)", [(cid, i) for i, _c in facts])
                 conn.commit()
+            if twin is None:
+                self._supersede_old(cid, cvec, concl, namespace)
         if done:
             with sqlite3.connect(self.db_path) as conn:
                 conn.executemany("UPDATE facts SET reasoned=1 WHERE id=?", [(i,) for i in done])
@@ -1277,12 +1291,12 @@ class StoneWaveEngine:
                     expired.append(cid)
                     continue
                 conn.execute("UPDATE conclusions SET energy=?, status=?, last_decay=? WHERE id=?", (energy, status, now, cid))
-            conn.executemany("DELETE FROM conclusion_sources WHERE conclusion_id=?", [(i,) for i in expired])
-            conn.executemany("DELETE FROM conclusions WHERE id=?", [(i,) for i in expired])
+            for i in expired:
+                self._retire_conclusion(conn, i, "caducada")
             over = [r[0] for r in conn.execute(
                 "SELECT id FROM conclusions WHERE namespace=? AND status!='confirmada' ORDER BY energy DESC, id DESC", (namespace,)).fetchall()][CONCLUSION_MAX:]
-            conn.executemany("DELETE FROM conclusion_sources WHERE conclusion_id=?", [(i,) for i in over])
-            conn.executemany("DELETE FROM conclusions WHERE id=?", [(i,) for i in over])
+            for i in over:
+                self._retire_conclusion(conn, i, "excedente")
             conn.commit()
         return len(expired) + len(over)
 
@@ -1294,7 +1308,8 @@ class StoneWaveEngine:
             conn.execute("DELETE FROM conclusion_sources WHERE fact_id NOT IN (SELECT id FROM facts)")
             orphans = [r[0] for r in conn.execute(
                 "SELECT id FROM conclusions WHERE namespace=? AND id NOT IN (SELECT conclusion_id FROM conclusion_sources)", (namespace,))]
-            conn.executemany("DELETE FROM conclusions WHERE id=?", [(i,) for i in orphans])
+            for i in orphans:
+                self._retire_conclusion(conn, i, "sin_origen")
             conn.commit()
             rows = conn.execute(
                 "SELECT id, content, embedding, COALESCE(energy, ?), status, COALESCE(support, 0), COALESCE(against, 0), "
@@ -1329,8 +1344,7 @@ class StoneWaveEngine:
                     energy, against = max(0.0, energy - 0.2), against + 1
             with sqlite3.connect(self.db_path) as conn:
                 if energy <= 0.05:
-                    conn.execute("DELETE FROM conclusion_sources WHERE conclusion_id=?", (cid,))
-                    conn.execute("DELETE FROM conclusions WHERE id=?", (cid,))
+                    self._retire_conclusion(conn, cid, "contradicha")
                     dropped += 1
                 else:
                     if status != "confirmada" and support >= CONFIRM_SUPPORT and energy >= 0.6 - 1e-9:
@@ -1344,6 +1358,182 @@ class StoneWaveEngine:
                 conn.commit()
         self._sync_version()
         return confirmed, dropped
+
+    def _retire_conclusion(self, conn, cid, reason, replaced_by=None):
+        """Quita una conclusion de las vivas y la pasa al HISTORIAL (tabla conclusion_history) con el motivo: 'caducada', 'contradicha',
+        'reemplazada', 'excedente' (salio por el tope) o 'sin_origen' (sus recuerdos ya no existen). Asi se puede enlazar y consultar
+        despues, aunque ya no cuente. Usa la conexion dada (no hace commit). Los vinculos 'deriva de' donde era PADRE se conservan,
+        para que sus hijas sigan apuntando a ella en el historial."""
+        row = conn.execute("SELECT namespace, content, status, energy, support, against, created_at FROM conclusions WHERE id=?", (cid,)).fetchone()
+        if row:
+            srcs = [r[0] for r in conn.execute("SELECT fact_id FROM conclusion_sources WHERE conclusion_id=?", (cid,))]
+            ns = row[0]
+            conn.execute(
+                "INSERT INTO conclusion_history (orig_id, namespace, content, status, energy, support, against, reason, replaced_by, created_at, ended_at, sources) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (cid, ns, row[1], row[2], row[3], row[4], row[5], reason, replaced_by, row[6], time.time(), json.dumps(srcs)))
+            conn.execute(
+                "DELETE FROM conclusion_history WHERE namespace=? AND id NOT IN "
+                "(SELECT id FROM conclusion_history WHERE namespace=? ORDER BY id DESC LIMIT ?)", (ns, ns, HISTORY_MAX))
+        conn.execute("DELETE FROM conclusion_sources WHERE conclusion_id=?", (cid,))
+        conn.execute("DELETE FROM conclusion_parents WHERE child_id=?", (cid,))
+        conn.execute("DELETE FROM conclusions WHERE id=?", (cid,))
+
+    def _count_history(self, namespace, reason, since):
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            return conn.execute("SELECT COUNT(*) FROM conclusion_history WHERE namespace=? AND reason=? AND ended_at>=?",
+                                (namespace, reason, since)).fetchone()[0]
+
+    def list_conclusion_history(self, namespace="default"):
+        """Conclusiones que caducaron o se reemplazaron, lo mas reciente primero. Dicts: id, orig_id (el ID que tenia cuando estaba viva),
+        content, status, energy, support, against, reason, replaced_by (ID de la conclusion que la reemplazo), created, ended, sources [IDs]."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                "SELECT id, orig_id, content, status, COALESCE(energy, 0), COALESCE(support, 0), COALESCE(against, 0), reason, replaced_by, "
+                "created_at, ended_at, sources FROM conclusion_history WHERE namespace=? ORDER BY id DESC", (namespace,)).fetchall()
+        out = []
+        for r in rows:
+            try:
+                srcs = [int(x) for x in json.loads(r[11] or "[]")]
+            except Exception:
+                srcs = []
+            out.append({"id": r[0], "orig_id": r[1], "content": r[2], "status": r[3], "energy": float(r[4]), "support": r[5], "against": r[6],
+                        "reason": r[7], "replaced_by": r[8], "created": r[9], "ended": r[10], "sources": srcs})
+        return out
+
+    def _supersede_old(self, new_id, vec, text, namespace):
+        """Si la conclusion nueva CONTRADICE a una hipotesis parecida (no confirmada), la vieja pasa al historial como 'reemplazada' y
+        queda enlazada a la nueva. El modelo tiene que decirlo en los dos ordenes (uno chico se equivoca). Devuelve cuantas reemplazo."""
+        if np is None:
+            return 0
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute("SELECT id, content, embedding FROM conclusions WHERE namespace=? AND id!=? AND status!='confirmada'",
+                                (namespace, new_id)).fetchall()
+        if not rows:
+            return 0
+        _i, _m, _x, mu = self._load_vectors(namespace, "facts")
+        q = self._unit(np.asarray(vec, dtype=np.float32), mu)
+        close = []
+        for cid, content, blob in rows:
+            try:
+                v = np.asarray(json.loads(blob), dtype=np.float32)
+            except Exception:
+                continue
+            if v.shape != q.shape:
+                continue
+            sim = float(self._unit(v, mu) @ q)
+            if CONFLICT_SIM <= sim < DUPLICATE_SIM:
+                close.append((sim, cid, content))
+        close.sort(reverse=True)
+        n = 0
+        for _s, cid, content in close[:3]:
+            a = self._ask_llm_conflict(content, text)
+            b = self._ask_llm_conflict(text, content) if "CONTRADICTORIO" in a else a
+            if "CONTRADICTORIO" in a and "CONTRADICTORIO" in b:
+                with sqlite3.connect(self.db_path) as conn:
+                    self._retire_conclusion(conn, cid, "reemplazada", replaced_by=new_id)
+                n += 1
+        return n
+
+    def _ask_llm_derivation(self, texts):
+        """Pide UNA conclusion nueva que se desprenda de varias conclusiones ya CONFIRMADAS. Devuelve el texto, '' si no hay, o None si el modelo no responde."""
+        listed = "\n".join(f"- {t}" for t in texts)
+        prompt = ("Estas son conclusiones ya confirmadas sobre una persona:\n\n" + listed + "\n\n"
+                  "Escribe UNA sola conclusión nueva (una frase) que se desprenda de TODAS ellas juntas y que diga algo más general o distinto. "
+                  "No repitas ninguna tal cual y no inventes nada que no esté respaldado. Si no hay una conclusión clara, responde exactamente: NINGUNA")
+        text = self.generator.generate(prompt, timeout=60, model=CONCLUSION_MODEL)
+        if text is None:
+            return None
+        line = next((l.strip(" -*\t\"'") for l in text.strip().splitlines() if l.strip()), "")
+        line = re.sub(r"^(nueva\s+)?conclusi[oó]n\s*:\s*", "", line, flags=re.I).strip(" -*\t\"'")
+        if not line or len(line) < 15 or line.casefold().startswith(NO_CONCLUSION):
+            return ""
+        return line[:240]
+
+    def _derive_conclusions(self, namespace, limit=None):
+        """Segundo nivel de razonamiento: el sueno razona sobre las CONCLUSIONES ya confirmadas (no sobre recuerdos sueltos).
+        Toma una confirmada que aun no se haya intentado, la junta con sus vecinas confirmadas mas parecidas (DERIVE_GROUP_SIZE) y pide
+        una conclusion nueva que se desprenda de todas. Pasa por la misma verificacion que las demas (la mayoria la respalda, ninguna la
+        contradice) y nace como hipotesis con poca energia, enlazada a sus padres (tabla conclusion_parents) y con la union de sus
+        recuerdos de origen. Devuelve cuantas conclusiones nuevas nacieron. Si el modelo no responde, se reintenta en otro sueno."""
+        limit = DERIVE_PER_DREAM if limit is None else limit
+        if np is None:
+            return 0
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            seeds = [r[0] for r in conn.execute(
+                "SELECT id FROM conclusions WHERE namespace=? AND status='confirmada' AND COALESCE(derived,0)=0 ORDER BY energy DESC, id DESC LIMIT ?",
+                (namespace, limit))]
+            pool = {r[0]: (r[1], r[2]) for r in conn.execute(
+                "SELECT id, content, embedding FROM conclusions WHERE namespace=? AND status='confirmada'", (namespace,))}
+        if not seeds or len(pool) < 2:
+            return 0
+        _i, _m, _x, mu = self._load_vectors(namespace, "facts")
+        new, tried = 0, set()
+        for sid in seeds:
+            if sid in tried or sid not in pool:
+                continue
+            try:
+                q = self._unit(np.asarray(json.loads(pool[sid][1]), dtype=np.float32), mu)
+            except Exception:
+                continue
+            near = []
+            for cid, (content, blob) in pool.items():
+                if cid == sid:
+                    continue
+                try:
+                    v = np.asarray(json.loads(blob), dtype=np.float32)
+                except Exception:
+                    continue
+                if v.shape != q.shape:
+                    continue
+                sim = float(self._unit(v, mu) @ q)
+                if sim >= RELATED_SIM:
+                    near.append((sim, cid))
+            near.sort(reverse=True)
+            group = [sid] + [c for _s, c in near[:DERIVE_GROUP_SIZE - 1]]
+            if len(group) < 2:
+                continue  # sin vecinas no hay de donde derivar; se reintenta cuando haya mas confirmadas
+            texts = [pool[g][0] for g in group]
+            concl = self._ask_llm_derivation(texts)
+            if concl is None:
+                break
+            cvec = self.get_embedding(concl) if concl else None
+            if concl and cvec is None:
+                break
+            tried.update(group)
+            with sqlite3.connect(self.db_path) as conn:
+                conn.executemany("UPDATE conclusions SET derived=1 WHERE id=?", [(g,) for g in group])
+                conn.commit()
+            if not concl:
+                continue
+            verdicts = [self._ask_llm_support(t, concl) for t in texts]
+            if "CONTRADICE" in verdicts or verdicts.count("RESPALDA") < max(2, math.ceil(len(texts) / 2)):
+                continue
+            twin = self._conclusion_twin(cvec, concl, namespace)
+            if twin in group:
+                continue  # no dijo nada nuevo: es una de sus propias padres
+            now = time.time()
+            with sqlite3.connect(self.db_path) as conn:
+                if twin is not None:
+                    cid = twin
+                    conn.execute("UPDATE conclusions SET energy=MIN(1.0, COALESCE(energy, 0.3) + 0.1), last_checked=? WHERE id=?", (now, cid))
+                    group = [g for g in group if not conn.execute(
+                        "SELECT 1 FROM conclusion_parents WHERE child_id=? AND parent_id=?", (g, cid)).fetchone()]  # evita ciclos
+                else:
+                    cur = conn.execute(
+                        "INSERT INTO conclusions (namespace, content, energy, embedding, status, support, against, created_at, last_checked, last_decay) "
+                        "VALUES (?, ?, ?, ?, 'hipotesis', 0, 0, ?, ?, ?)",
+                        (namespace, concl, CONCLUSION_START_ENERGY, json.dumps(cvec), now, now, now))
+                    cid = cur.lastrowid
+                    new += 1
+                conn.executemany("INSERT OR IGNORE INTO conclusion_parents (child_id, parent_id) VALUES (?, ?)", [(cid, g) for g in group])
+                conn.execute(
+                    "INSERT OR IGNORE INTO conclusion_sources (conclusion_id, fact_id) "
+                    f"SELECT DISTINCT ?, fact_id FROM conclusion_sources WHERE conclusion_id IN ({','.join('?' * len(group))})",
+                    [cid] + list(group))
+                conn.commit()
+        self._sync_version()
+        return new
 
     def query_conclusions(self, text, namespace="default", limit=2):
         """Conclusiones parecidas a 'text': lista de dicts (sim, id, content, status, energy). Solo informa, no modifica nada.
@@ -1374,12 +1564,14 @@ class StoneWaveEngine:
         return scored[:limit]
 
     def notes_data(self, namespace="default"):
-        """Datos para las notas de Obsidian: las conclusiones (con los IDs de sus recuerdos de origen), esos recuerdos y las
-        relaciones entre conclusiones ('comparten' recuerdos o 'parecida' en significado). Solo lee."""
+        """Datos para las notas de Obsidian: las conclusiones (con los IDs de sus recuerdos de origen), esos recuerdos, las relaciones entre
+        conclusiones ('comparten' recuerdos o 'parecida' en significado), de cuales DERIVAN otras (parent_refs / child_refs) y el HISTORIAL de
+        las que caducaron o se reemplazaron (con 'replaced_by' y, en las vivas, 'replaced': las que reemplazaron). Solo lee."""
         concs = self.list_conclusions(namespace)
+        hist = self.list_conclusion_history(namespace)
         with closing(sqlite3.connect(self.db_path)) as conn:
             created = {r[0]: r[1] for r in conn.execute("SELECT id, created_at FROM conclusions WHERE namespace=?", (namespace,))}
-            ids = sorted({f for c in concs for f in c["sources"]})
+            ids = sorted({f for c in concs for f in c["sources"]} | {f for h in hist for f in h["sources"]})
             facts = {}
             if ids:
                 q = ",".join("?" * len(ids))
@@ -1392,15 +1584,44 @@ class StoneWaveEngine:
                     if fid in facts:
                         facts[fid]["topics"].append(topic)
             vec_rows = conn.execute("SELECT id, embedding FROM conclusions WHERE namespace=?", (namespace,)).fetchall()
+            parent_rows = conn.execute("SELECT child_id, parent_id FROM conclusion_parents").fetchall()
+        by_id = {c["id"]: c for c in concs}
         for c in concs:
             c["created"] = created.get(c["id"])
-        rel = {c["id"]: [] for c in concs}
+            c["parent_refs"], c["child_refs"], c["replaced"] = [], [], []
+        hist_by_id = {h["id"]: h for h in hist}
+        orig = {h["orig_id"]: h["id"] for h in hist if h["orig_id"] is not None}
+
+        def ref(cid):  # una conclusion viva ('c', id) o una del historial ('h', id)
+            if cid in by_id:
+                return ("c", cid)
+            if cid in orig:
+                return ("h", orig[cid])
+            return None
+
+        for h in hist:
+            h["parent_refs"] = []
+            r = ref(h["replaced_by"]) if h["replaced_by"] is not None else None
+            h["replaced_by"] = r
+            if r and r[0] == "c":
+                by_id[r[1]]["replaced"].append(h["id"])
         pairs = set()
+        for child, parent in parent_rows:
+            cr, pr = ref(child), ref(parent)
+            if cr is None or pr is None:
+                continue
+            (by_id[child] if cr[0] == "c" else hist_by_id[cr[1]])["parent_refs"].append(pr)
+            if pr[0] == "c":
+                by_id[parent]["child_refs"].append(cr)
+            if cr[0] == "c" and pr[0] == "c":
+                pairs.add((min(child, parent), max(child, parent)))  # ya estan unidas por 'deriva de': no se repiten como 'relacionada'
+        rel = {c["id"]: [] for c in concs}
         for i, a in enumerate(concs):
             for b in concs[i + 1:]:
+                key = (min(a["id"], b["id"]), max(a["id"], b["id"]))
                 n = len(set(a["sources"]) & set(b["sources"]))
-                if n:
-                    pairs.add((a["id"], b["id"]))
+                if n and key not in pairs:
+                    pairs.add(key)
                     rel[a["id"]].append({"id": b["id"], "kind": "comparten", "n": n})
                     rel[b["id"]].append({"id": a["id"], "kind": "comparten", "n": n})
         if np is not None and len(concs) > 1:
@@ -1433,7 +1654,7 @@ class StoneWaveEngine:
                 print(f"StoneWave: no se pudo calcular la similitud entre conclusiones: {ex!r}", file=sys.stderr)
         for lst in rel.values():
             lst.sort(key=lambda r: (r["kind"] != "comparten", -(r.get("n") or 0), -(r.get("sim") or 0)))
-        return {"namespace": namespace, "conclusions": concs, "facts": facts, "relations": rel}
+        return {"namespace": namespace, "conclusions": concs, "facts": facts, "relations": rel, "history": hist}
 
     def export_notes(self, namespace="default", base_dir=None):
         """Escribe las conclusiones como notas de Obsidian con wikilinks (ver notes.py). Solo escribe una COPIA para ver: la memoria
@@ -1458,8 +1679,11 @@ class StoneWaveEngine:
             srcs = {}
             for cid, fid in conn.execute("SELECT conclusion_id, fact_id FROM conclusion_sources"):
                 srcs.setdefault(cid, []).append(fid)
+            pars = {}
+            for child, parent in conn.execute("SELECT child_id, parent_id FROM conclusion_parents"):
+                pars.setdefault(child, []).append(parent)
         return [{"id": r[0], "content": r[1], "energy": float(r[2]), "status": r[3], "support": r[4], "against": r[5],
-                 "sources": sorted(srcs.get(r[0], []))} for r in rows]
+                 "sources": sorted(srcs.get(r[0], [])), "parents": sorted(pars.get(r[0], []))} for r in rows]
 
     def forget_conclusion(self, conclusion_id, namespace="default"):
         """Borra una conclusion (la que el sueño dedujo mal). No toca los recuerdos. Devuelve {'status': 'deleted'|'not_found'|'error', ...}."""
@@ -1473,6 +1697,7 @@ class StoneWaveEngine:
                 return {"status": "not_found", "message": f"No hay una conclusion con ID {cid} en '{namespace}'."}
             conn.execute("DELETE FROM conclusion_sources WHERE conclusion_id=?", (cid,))
             conn.execute("DELETE FROM conclusions WHERE id=?", (cid,))
+            conn.execute("DELETE FROM conclusion_parents WHERE child_id=?", (cid,))
         return {"status": "deleted", "id": cid, "content": row[0]}
 
     def get_context(self, namespace="default", token_budget=600):
@@ -1528,11 +1753,15 @@ class StoneWaveEngine:
                 f"Temas clasificados: {topics}.")
         if CONCLUSIONS_ON:  # razonar: el sueño pesa las hipotesis viejas y saca conclusiones de lo nuevo (nunca debe tirar el sueño)
             try:
+                t0 = time.time()
                 expired = self._decay_conclusions(namespace)
                 confirmed, w_drop = self._weigh_conclusions(namespace)
                 c_new, c_re, c_drop = self._reason_pending(namespace)
+                derived = self._derive_conclusions(namespace)
+                replaced = self._count_history(namespace, "reemplazada", t0)
                 msg += (f" Conclusiones: {c_new} nuevas, {c_re} reforzadas, {confirmed} confirmadas, "
-                        f"{c_drop + w_drop} descartadas, {expired} caducadas.")
+                        f"{c_drop + w_drop} descartadas, {expired} caducadas. "
+                        f"{derived} derivadas de otras, {replaced} reemplazadas.")
             except Exception as ex:
                 print(f"StoneWave: error razonando conclusiones: {ex!r}", file=sys.stderr)
         try:  # notas de Obsidian: solo si esta activado STONEWAVE_NOTES (es una copia para ver; nunca debe tirar el sueño)

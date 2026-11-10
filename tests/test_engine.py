@@ -37,6 +37,7 @@ def make_engine(db=None, verdict="COMPLEMENTARIO"):
     e.classify_topics = lambda t: ["otro"]
     e._ask_llm_conflict = lambda a, b: verdict
     e._ask_llm_conclusion = lambda f: ""
+    e._ask_llm_derivation = lambda f: ""
     e._ask_llm_support = lambda f, c: "NEUTRO"
     return e
 

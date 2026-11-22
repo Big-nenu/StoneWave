@@ -26,3 +26,6 @@ jobs:
 
       - name: Pruebas de las notas de Obsidian (sin Ollama)
         run: python tests/test_notes.py
+
+      - name: Pruebas de recent_notes (sin Ollama)
+        run: python tests/test_recent_notes.py

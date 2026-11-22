@@ -319,6 +319,7 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `list_memories` | Lista completa de lo que ya se sabe del usuario, con sus IDs |
 | `forget_conclusion` | Borra una conclusión que el sueño dedujo mal (por su `[C n]`); no toca los recuerdos |
 | `conclusion_history` | Conclusiones que ya no cuentan (caducaron, las contradijeron o las reemplazó otra); solo si preguntas qué pensaba antes o por qué cambió |
+| `recent_notes` | Lee las notas de Obsidian más recientes que StoneWave escribió (con su texto, hasta 10; filtro opcional `conclusiones`, `recuerdos` o `historial`). Solo lectura: no cambia notas ni memoria |
 | `export_notes` | Escribe o actualiza las notas de Obsidian con las conclusiones (el sueño ya lo hace solo si hay `STONEWAVE_NOTES`) |
 | `query_memory` | Busca recuerdos relacionados con un tema (y avisa, como historial, si el tema estaba en la papelera; también muestra aparte las conclusiones parecidas) |
 | `inject_memory` | Guarda un dato duradero (`fijo=true` para identidad) |

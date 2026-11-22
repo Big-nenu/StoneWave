@@ -174,6 +174,47 @@ def render_history(h, memories, names, host, namespace, pick):
     return out + "\n"
 
 
+_FRONT = re.compile(r"\A---\n.*?\n---\n", re.S)
+_WIKILINK = re.compile(r"\[\[[^\]|]*\|([^\]]*)\]\]")
+
+
+def _body(text, max_chars):
+    """Texto legible de una nota: sin propiedades, sin el aviso de 'copia' y con los wikilinks reducidos a su texto."""
+    text = _FRONT.sub("", text.replace("\r\n", "\n"), count=1)
+    text = "\n".join(line for line in text.splitlines() if line.strip() != _WARNING)
+    text = _WIKILINK.sub(r"\1", text).strip()
+    return text if len(text) <= max_chars else text[:max_chars].rstrip() + "..."
+
+
+def read_recent(base_dir, limit=5, folder=None, max_chars=1200):
+    """Las notas .md modificadas mas recientemente dentro de base_dir (solo las carpetas de StoneWave). SOLO LEE: no cambia nada.
+
+    Devuelve [{path, folder, modified (ISO local), content}], lo mas nuevo primero. Nunca sale de base_dir."""
+    base = Path(base_dir).resolve()
+    names = [folder] if folder in (FOLDER_CONCLUSIONS, FOLDER_MEMORIES, FOLDER_HISTORY) else \
+        [FOLDER_CONCLUSIONS, FOLDER_MEMORIES, FOLDER_HISTORY]
+    found = []
+    for name in names:
+        directory = base / name
+        if not directory.is_dir():
+            continue
+        for path in directory.glob("*.md"):
+            try:
+                real = path.resolve()
+                if base in real.parents:  # un enlace simbolico que apunte afuera no se lee
+                    found.append((real.stat().st_mtime, name, real))
+            except OSError:
+                continue
+    found.sort(key=lambda item: item[0], reverse=True)
+    out = []
+    for mtime, name, path in found[:max(1, int(limit))]:
+        text = _read(path)
+        if text is not None:
+            out.append({"path": f"{name}/{path.name}", "folder": name,
+                        "modified": datetime.fromtimestamp(mtime).astimezone().isoformat(), "content": _body(text, max_chars)})
+    return out
+
+
 def _is_generated(text):
     return bool(_MARK.search(text[:1500]))
 
@@ -249,8 +290,10 @@ def write_notes(data, base_dir, host=None):
         wanted[hist_dir / f"{name}.md"] = render_history(h, memories, names, host, data["namespace"], pick)
 
     res = {"written": 0, "unchanged": 0, "deleted": 0, "skipped": [], "conclusions": len(concs), "memories": len(used), "history": len(hist)}
+    res.update(created_files=[], updated_files=[])
     for path, text in wanted.items():
-        old = _read(path) if path.exists() else None
+        existed = path.exists()
+        old = _read(path) if existed else None
         if old is not None and not _is_generated(old):
             res["skipped"].append(path.name)  # una nota tuya con ese nombre: no se toca
         elif old == text:
@@ -258,6 +301,8 @@ def write_notes(data, base_dir, host=None):
         else:
             path.write_text(text, encoding="utf-8", newline="\n")
             res["written"] += 1
+            files = res["created_files"] if not existed else res["updated_files"]
+            files.append(path.relative_to(base).as_posix())
     for folder in (conc_dir, mem_dir, hist_dir):
         for path in folder.glob("*.md"):
             if path in wanted:

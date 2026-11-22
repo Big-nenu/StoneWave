@@ -266,6 +266,7 @@ class StoneWaveEngine:
                 cursor.execute("DELETE FROM facts WHERE namespace=?", (namespace,))
                 cursor.execute("DELETE FROM archived_facts WHERE namespace=?", (namespace,))
                 cursor.execute("DELETE FROM trash WHERE namespace=?", (namespace,))
+                cursor.execute("DELETE FROM meta WHERE key=?", (f"last_dream_activity:{namespace}",))
             else:
                 cursor.execute("DELETE FROM links")
                 cursor.execute("DELETE FROM conclusion_sources")
@@ -275,6 +276,7 @@ class StoneWaveEngine:
                 cursor.execute("DELETE FROM facts")
                 cursor.execute("DELETE FROM archived_facts")
                 cursor.execute("DELETE FROM trash")
+                cursor.execute("DELETE FROM meta WHERE key GLOB 'last_dream_activity:*'")
             conn.commit()
 
     def print_table(self, table="facts"):
@@ -994,7 +996,7 @@ class StoneWaveEngine:
         if run_dream:
             for ns in new_in:
                 try:
-                    summary["dream"].append(self.dream(namespace=ns))
+                    summary["dream"].append(self.dream(namespace=ns, source="importación"))
                 except Exception as ex:  # el sueño es un extra: no debe tirar la importacion
                     summary["dream"].append(f"El sueño de '{ns}' fallo: {ex}")
         return summary
@@ -1081,7 +1083,7 @@ class StoneWaveEngine:
             done += 1
         return done
 
-    def _link_facts(self, namespace):
+    def _link_facts(self, namespace, report=None):
         """Enlaza recuerdos parecidos SIN modificarlos. Si se contradicen, el mas viejo pasa al sotano."""
         ids, mat, _idx, _mu = self._load_vectors(namespace, "facts")
         if len(ids) < 2:
@@ -1140,6 +1142,11 @@ class StoneWaveEngine:
                 if a in archive or b in archive:
                     continue
                 cur.execute("INSERT OR REPLACE INTO links (fact_a, fact_b, sim, kind) VALUES (?, ?, ?, ?)", (a, b, s, kind))
+                if report is not None:
+                    report["links_count"] += 1
+                    # shortcut: conservar los 50 enlaces más fuertes, ampliar si se necesita un historial detallado.
+                    if len(report["links"]) < 50:
+                        report["links"].append({"kind": kind, "facts": [int(a), int(b)]})
             conn.commit()
         similar = sum(1 for v in links.values() if v[1] == "similar")
         related = sum(1 for v in links.values() if v[1] == "relacionado")
@@ -1201,7 +1208,7 @@ class StoneWaveEngine:
                 best, best_id = s, cid
         return best_id if best >= DUPLICATE_SIM else None
 
-    def _reason_pending(self, namespace, groups=None):
+    def _reason_pending(self, namespace, groups=None, *, created=None):
         """Razona los recuerdos pendientes (reasoned=0): agrupa cada uno con sus vecinos mas parecidos, un modelo generativo
         propone UNA conclusion y el modelo de decision comprueba que los recuerdos la respalden. Si pasa, queda guardada como
         'hipotesis' con poca energia. Devuelve (nuevas, reforzadas, descartadas).
@@ -1262,6 +1269,8 @@ class StoneWaveEngine:
                 conn.executemany("INSERT OR IGNORE INTO conclusion_sources (conclusion_id, fact_id) VALUES (?, ?)", [(cid, i) for i, _c in facts])
                 conn.commit()
             if twin is None:
+                if created is not None:
+                    created.append({"id": cid, "kind": "hipótesis"})
                 self._supersede_old(cid, cvec, concl, namespace)
         if done:
             with sqlite3.connect(self.db_path) as conn:
@@ -1450,7 +1459,7 @@ class StoneWaveEngine:
             return ""
         return line[:240]
 
-    def _derive_conclusions(self, namespace, limit=None):
+    def _derive_conclusions(self, namespace, limit=None, *, created=None):
         """Segundo nivel de razonamiento: el sueno razona sobre las CONCLUSIONES ya confirmadas (no sobre recuerdos sueltos).
         Toma una confirmada que aun no se haya intentado, la junta con sus vecinas confirmadas mas parecidas (DERIVE_GROUP_SIZE) y pide
         una conclusion nueva que se desprenda de todas. Pasa por la misma verificacion que las demas (la mayoria la respalda, ninguna la
@@ -1532,6 +1541,8 @@ class StoneWaveEngine:
                     f"SELECT DISTINCT ?, fact_id FROM conclusion_sources WHERE conclusion_id IN ({','.join('?' * len(group))})",
                     [cid] + list(group))
                 conn.commit()
+            if twin is None and created is not None:
+                created.append({"id": cid, "kind": "hipótesis derivada"})
         self._sync_version()
         return new
 
@@ -1743,11 +1754,13 @@ class StoneWaveEngine:
             out.append(f"(+{state['hidden']} más sin mostrar; usa query_memory para buscar un tema)")
         return "\n".join(out)
 
-    def dream(self, namespace="default"):
+    def dream(self, namespace="default", *, source="manual"):
         """Sueño: baja al sotano lo que no se usa, clasifica por temas, enlaza recuerdos y razona (conclusiones). No reescribe ningun recuerdo."""
+        report = {"source": source, "links_count": 0, "links": [], "conclusions": [],
+                  "conclusions_status": "disabled", "notes_status": "disabled", "notes_created": [], "notes_updated": []}
         archived = self.decay(namespace)
         topics = self._classify_pending(namespace)
-        contradictions, similar, related = self._link_facts(namespace)
+        contradictions, similar, related = self._link_facts(namespace, report)
         msg = (f"Sleeptime finalizado para {namespace}. Al sotano por desuso: {archived}. "
                 f"Al sotano por contradiccion: {contradictions}. Enlaces: {similar} similares, {related} relacionados. "
                 f"Temas clasificados: {topics}.")
@@ -1756,26 +1769,75 @@ class StoneWaveEngine:
                 t0 = time.time()
                 expired = self._decay_conclusions(namespace)
                 confirmed, w_drop = self._weigh_conclusions(namespace)
-                c_new, c_re, c_drop = self._reason_pending(namespace)
-                derived = self._derive_conclusions(namespace)
+                c_new, c_re, c_drop = self._reason_pending(namespace, created=report["conclusions"])
+                derived = self._derive_conclusions(namespace, created=report["conclusions"])
+                report["conclusions_status"] = "ok"
                 replaced = self._count_history(namespace, "reemplazada", t0)
                 msg += (f" Conclusiones: {c_new} nuevas, {c_re} reforzadas, {confirmed} confirmadas, "
                         f"{c_drop + w_drop} descartadas, {expired} caducadas. "
                         f"{derived} derivadas de otras, {replaced} reemplazadas.")
             except Exception as ex:
+                report["conclusions_status"] = "error"
                 print(f"StoneWave: error razonando conclusiones: {ex!r}", file=sys.stderr)
         try:  # notas de Obsidian: solo si esta activado STONEWAVE_NOTES (es una copia para ver; nunca debe tirar el sueño)
             import notes
             if notes.notes_dir():
                 r = self.export_notes(namespace)
+                report["notes_status"] = r["status"]
+                report["notes_created"] = r.get("created_files", [])
+                report["notes_updated"] = r.get("updated_files", [])
                 msg += (f" Notas de Obsidian: {r['written']} escritas, {r['unchanged']} sin cambios, {r['deleted']} borradas."
                         if r["status"] == "ok" else f" Notas de Obsidian: {r['message']}")
         except Exception as ex:
+            report["notes_status"] = "error"
             print(f"StoneWave: error escribiendo las notas de Obsidian: {ex!r}", file=sys.stderr)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (f"last_dream:{namespace}", str(time.time())))
-            conn.commit()
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            timestamp = str(time.time())
+            report["timestamp"] = timestamp
+            conn.executemany("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (
+                (f"last_dream:{namespace}", timestamp),
+                (f"last_dream_activity:{namespace}", json.dumps(report, ensure_ascii=False)),
+            ))
         return msg
+
+    def dream_activity(self, namespace="default"):
+        date_key, report_key = f"last_dream:{namespace}", f"last_dream_activity:{namespace}"
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            metadata = dict(conn.execute("SELECT key, value FROM meta WHERE key IN (?, ?)", (date_key, report_key)))
+        if date_key not in metadata:
+            return {"status": "never"}
+        result = json.loads(metadata.get(report_key, "{}"))
+        finished_at = self._iso(metadata[date_key])
+        if result.get("timestamp") != metadata[date_key]:
+            return {"status": "date_only", "finished_at": finished_at}
+        del result["timestamp"]
+        facts = dict(self._facts_by_id({fid for link in result["links"] for fid in link["facts"]}))
+        for link in result["links"]:
+            link["facts"] = [{"id": fid, "content": facts[fid][:240] if fid in facts else None}
+                             for fid in link["facts"]]
+        if result["conclusions"]:
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                conclusions = dict(conn.execute("SELECT id, content FROM conclusions WHERE namespace=?", (namespace,)))
+            for item in result["conclusions"]:
+                item["content"] = conclusions.get(item["id"])
+        return dict(result, status="ok", finished_at=finished_at)
+
+    def recent_notes(self, limit=5, folder=None):
+        """Notas de Obsidian mas recientes (con su texto). SOLO LEE la carpeta STONEWAVE_NOTES; no escribe nada.
+        Devuelve {'status': 'ok' | 'empty' | 'off' | 'error', 'notes': [...]}."""
+        import notes
+        base = notes.notes_dir()
+        if not base:
+            return {"status": "off", "notes": []}
+        if not os.path.isdir(base):
+            return {"status": "error", "notes": []}
+        try:
+            limit = max(1, min(int(limit), 10))
+        except (TypeError, ValueError):
+            limit = 5
+        items = notes.read_recent(base, limit, folder or None)
+        return {"status": "ok" if items else "empty", "notes": items}
 
     def hours_since_dream(self, namespace="default"):
         """Horas desde el ultimo sueño (manual o automatico). None si nunca se ha soñado."""

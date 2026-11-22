@@ -1,4 +1,5 @@
 import contextlib
+import json
 import sys
 import threading
 import time
@@ -54,7 +55,7 @@ def _dream_loop():
             hours = engine.hours_since_dream(NS)
             if idle_min >= DREAM_IDLE_MIN or (hours is not None and hours >= 3 * every):
                 print("StoneWave: sueño automático...", file=sys.stderr)
-                print("StoneWave:", engine.dream(namespace=NS), file=sys.stderr)
+                print("StoneWave:", engine.dream(namespace=NS, source="automático"), file=sys.stderr)
         except Exception as ex:
             print(f"StoneWave: error en el sueño automático: {ex}", file=sys.stderr)
 
@@ -288,6 +289,20 @@ def bridge_memory(topic_a: str, topic_b: str) -> str:
         if res.get(key):
             out.append(f"Lo más cercano al tema {label}: [ID {res[key]['id']}] {res[key]['content']}")
     return "\n".join(out)
+
+@mcp.tool()
+def dream_activity() -> str:
+    """Consulta el último sueño de StoneWave: fecha, enlaces, conclusiones y notas. No ejecuta otro sueño."""
+    return json.dumps(engine.dream_activity(namespace=NS), ensure_ascii=False)
+
+
+@mcp.tool()
+def recent_notes(limit: int = 5, folder: str = "") -> str:
+    """Lee las notas de Obsidian más recientes que StoneWave escribió (con su texto). SOLO LECTURA: no cambia notas ni memoria.
+    limit: cuántas (1 a 10). folder: 'conclusiones', 'recuerdos' o 'historial' (vacío = todas). Devuelve JSON:
+    status ('ok', 'empty', 'off' o 'error') y notes [{path, folder, modified, content}], lo más nuevo primero."""
+    return json.dumps(engine.recent_notes(limit=limit, folder=folder or None), ensure_ascii=False)
+
 
 @mcp.tool()
 def force_dream() -> str:

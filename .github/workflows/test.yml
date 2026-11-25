@@ -29,3 +29,6 @@ jobs:
 
       - name: Pruebas de recent_notes (sin Ollama)
         run: python tests/test_recent_notes.py
+
+      - name: Pruebas del namespace por proyecto en el MCP (sin Ollama)
+        run: python tests/test_mcp_namespace.py

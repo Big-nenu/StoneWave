@@ -333,6 +333,8 @@ Se ponen dentro de `"env": { ... }` en la config del servidor.
 | `empty_trash` | Borra de verdad lo de la papelera (uno por ID, o todo con `confirm=true`) |
 | `sync_memory` | Sincroniza con el archivo compartido (`STONEWAVE_SYNC`), por ejemplo el de tu bóveda de Obsidian; solo cuando lo pides |
 
+**Un proyecto por llamada (`namespace`):** todas las herramientas (menos `sync_memory`) aceptan un `namespace` opcional, por ejemplo `proyecto-12`. Si no lo mandas se usa el de siempre (`STONEWAVE_NAMESPACE`, por defecto `default`), así que nada de lo anterior cambia. Cada etiqueta es independiente: sus recuerdos, conclusiones y sueño no se mezclan con los de otra. El sueño automático recorre todas las etiquetas que tengan recuerdos. Consultar varias etiquetas a la vez aún no existe.
+
 También hay una CLI: `python mem_cli.py inject|query|dream|reflect|bridge|clear|doctor|setup|sync|import|export` (import/export: ver «Editar, borrar, importar y exportar»).
 
 ## Editar, borrar, importar y exportar
@@ -636,6 +638,8 @@ archive/v0.1/    # prototipos y scripts de la primera version (historial, sin ma
 | Importar/exportar en `.jsonl` universal + adaptador del MCP `memory` | Hecho |
 | Contradicciones resueltas por fecha (`created_at`), no por orden de ID | Hecho |
 | Respaldo automático diario rotativo (7 días en `~/.stonewave/backups/`) | Hecho |
+| `namespace` opcional por llamada en las herramientas MCP (un proyecto = una etiqueta; `default` sigue siendo lo general) | Hecho (`tests/test_mcp_namespace.py`) |
+| Consultar varias etiquetas a la vez (proyecto + `default`) | Pendiente |
 | GitHub Action que corre `tests/test_engine.py` en cada push/PR a `main` | Hecho |
 | Adaptador de notas Markdown: `python mem_cli.py import notas.md --from markdown [--con-titulo] [-n NAMESPACE]` (acepta un `.md` o una carpeta; cada viñeta o párrafo es un recuerdo; omite front matter, código, tablas y comentarios; `--con-titulo` antepone el título de la sección; también se puede convertir aparte con `python parsers/markdown_parser.py notas.md salida.jsonl [--fijo-titulo "Sobre mi"]`) | Hecho (`parsers/markdown_parser.py`) |
 | Adaptador de ChatGPT y Claude: `python mem_cli.py import export.zip --from chatgpt [--con-titulo] [--min-chars 40] [--max-chars 600] [-n NAMESPACE]` (acepta `conversations.json` o el `.zip` de la exportación; solo toma TUS mensajes, omite los cortos, los muy largos y los repetidos; el formato se detecta solo, `--from claude` hace lo mismo; también se puede convertir aparte con `python parsers/chat_parser.py conversations.json salida.jsonl`) | Hecho (`parsers/chat_parser.py`) |
@@ -659,6 +663,7 @@ python tests/test_setup.py
 python tests/test_benchmark.py
 python tests/test_notes.py
 python tests/test_historial.py
+python tests/test_mcp_namespace.py
 ```
 
 Con Ollama encendido también: `python tests/real_test.py` y `python scripts/benchmark_stones.py`.

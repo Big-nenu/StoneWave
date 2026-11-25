@@ -729,6 +729,11 @@ class StoneWaveEngine:
                 "ORDER BY COALESCE(pinned,0) DESC, energy DESC", (namespace,)).fetchall()
         return [(r[0], r[1], float(r[2]), bool(r[3])) for r in rows]
 
+    def list_namespaces(self):
+        """Etiquetas (namespaces) que tienen recuerdos activos, en orden alfabetico."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            return [r[0] for r in conn.execute("SELECT DISTINCT namespace FROM facts ORDER BY namespace") if r[0]]
+
     def _facts_by_id(self, ids):
         """[(id, contenido)] de los IDs dados, en el mismo orden."""
         if not ids:

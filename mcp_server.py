@@ -32,6 +32,7 @@ INSTRUCTIONS = (
     "Ambas usan el ID que aparece como [ID n] en get_context, list_memories y query_memory. "
     "query_memory también revisa la papelera (lo olvidado o reemplazado): si devuelve un Historial, ese dato YA NO ESTÁ VIGENTE. "
     "Dile al usuario qué era, cuándo se borró o cambió (y por qué valor) y ofrécele restaurarlo; si acepta, llama restore_memory con el [papelera n]. "
+    "Todas las herramientas aceptan un namespace opcional (la etiqueta de un proyecto, ej. proyecto-12): si el cliente o el usuario indica un proyecto activo, pásalo en cada llamada; si no hay proyecto, no lo mandes y se usa la etiqueta por defecto. "
 )
 
 mcp = FastMCP("StoneWave", instructions=INSTRUCTIONS)
@@ -49,13 +50,14 @@ def _dream_loop():
     while True:
         time.sleep(300)
         try:
-            if not engine.dream_due(NS):
-                continue
             idle_min = (time.time() - _last_activity) / 60
-            hours = engine.hours_since_dream(NS)
-            if idle_min >= DREAM_IDLE_MIN or (hours is not None and hours >= 3 * every):
-                print("StoneWave: sueño automático...", file=sys.stderr)
-                print("StoneWave:", engine.dream(namespace=NS, source="automático"), file=sys.stderr)
+            for ns in dict.fromkeys([NS] + engine.list_namespaces()):  # la etiqueta por defecto y la de cada proyecto
+                if not engine.dream_due(ns):
+                    continue
+                hours = engine.hours_since_dream(ns)
+                if idle_min >= DREAM_IDLE_MIN or (hours is not None and hours >= 3 * every):
+                    print(f"StoneWave: sueño automático ({ns})...", file=sys.stderr)
+                    print("StoneWave:", engine.dream(namespace=ns, source="automático"), file=sys.stderr)
         except Exception as ex:
             print(f"StoneWave: error en el sueño automático: {ex}", file=sys.stderr)
 
@@ -70,12 +72,17 @@ def _backup_loop():
             print(f"StoneWave: error en el respaldo automático: {ex}", file=sys.stderr)
         time.sleep(3600)
 
+def _ns(namespace=None) -> str:
+    """Etiqueta (namespace) a usar: la que manda el cliente (ej. un proyecto) o, si no manda ninguna, la de siempre."""
+    ns = namespace.strip() if isinstance(namespace, str) else ""
+    return ns[:100] if ns else NS
+
 def _quiet():
     return contextlib.redirect_stdout(sys.stderr)
 
-def _all_memories(limit: int = 30) -> str:
+def _all_memories(limit: int = 30, namespace: str | None = None) -> str:
     with _quiet():
-        facts = engine.list_facts(namespace=NS)
+        facts = engine.list_facts(namespace=_ns(namespace))
     if not facts:
         return "La memoria está vacía todavía."
     shown = facts[:limit]
@@ -118,38 +125,38 @@ def _candidates_text(items) -> str:
     return "\n".join(f"- [ID {fid}] {content}" for fid, content in items)
 
 @mcp.tool()
-def list_memories(limit: int = 30) -> str:
+def list_memories(limit: int = 30, namespace: str | None = None) -> str:
     """Lista COMPLETA de lo que se sabe del usuario (cada recuerdo con su [ID n]). Para empezar una conversación usa mejor get_context, que es más corto."""
     _touch_activity()
-    return _all_memories(limit)
+    return _all_memories(limit, namespace)
 
 @mcp.tool()
-def get_context(token_budget: int = 600) -> str:
+def get_context(token_budget: int = 600, namespace: str | None = None) -> str:
     """LLAMA ESTO AL INICIO de CADA CONVERSACIÓN. Resumen corto de lo que se sabe del usuario, con un límite de tokens (token_budget):
     identidad (recuerdos fijos), conclusiones que dedujo el sueño y los recuerdos con más energía. Cada recuerdo trae su [ID n] y cada
     conclusión su [C n]. Las conclusiones marcadas como hipótesis NO están confirmadas: no las trates como hechos."""
     _touch_activity()
     with _quiet():
-        return engine.get_context(namespace=NS, token_budget=token_budget)
+        return engine.get_context(namespace=_ns(namespace), token_budget=token_budget)
 
 @mcp.tool()
-def forget_conclusion(conclusion_id: int) -> str:
+def forget_conclusion(conclusion_id: int, namespace: str | None = None) -> str:
     """Borra UNA conclusión que el sueño dedujo mal (no toca los recuerdos). conclusion_id es el número [C n] que muestra get_context."""
     _touch_activity()
     with _quiet():
-        res = engine.forget_conclusion(conclusion_id, namespace=NS)
+        res = engine.forget_conclusion(conclusion_id, namespace=_ns(namespace))
     if res["status"] == "deleted":
         return f"Conclusión olvidada: [C {res['id']}] {res['content']}"
     return res.get("message", "No se pudo olvidar la conclusión.")
 
 @mcp.tool()
-def conclusion_history(limit: int = 10) -> str:
+def conclusion_history(limit: int = 10, namespace: str | None = None) -> str:
     """Conclusiones que YA NO cuentan: caducaron, las contradijeron recuerdos nuevos o las reemplazó otra más reciente. Úsala SOLO si el usuario
     pregunta qué pensaba StoneWave antes, por qué cambió una conclusión o por qué ya no aparece. Nada de esto está vigente ni son hechos del usuario."""
     _touch_activity()
     with _quiet():
-        hist = engine.list_conclusion_history(namespace=NS)
-        live = {c["id"]: c["content"] for c in engine.list_conclusions(namespace=NS)}
+        hist = engine.list_conclusion_history(namespace=_ns(namespace))
+        live = {c["id"]: c["content"] for c in engine.list_conclusions(namespace=_ns(namespace))}
     if not hist:
         return "El historial de conclusiones está vacío."
     why = {"caducada": "caducó sin respaldo nuevo", "contradicha": "la contradijeron recuerdos nuevos", "reemplazada": "la reemplazó otra",
@@ -169,29 +176,29 @@ def _conclusions_text(items) -> str:
     return "\n\nConclusiones relacionadas (las dedujo el sueño; las hipótesis no son hechos del usuario):\n" + lines
 
 @mcp.tool()
-def query_memory(text: str) -> str:
+def query_memory(text: str, namespace: str | None = None) -> str:
     """Busca recuerdos relacionados con un tema. Cada resultado trae su ID (sirve para update_memory / forget_memory).
     También muestra, aparte, las conclusiones relacionadas que dedujo el sueño (con su [C n])."""
     _touch_activity()
     with _quiet():
-        conclusions = engine.query_conclusions(text, namespace=NS, limit=2)
-    return _query_text(text) + _conclusions_text(conclusions)
+        conclusions = engine.query_conclusions(text, namespace=_ns(namespace), limit=2)
+    return _query_text(text, namespace) + _conclusions_text(conclusions)
 
-def _query_text(text: str) -> str:
+def _query_text(text: str, namespace: str | None = None) -> str:
     with _quiet():
-        res = engine.query(text, namespace=NS)
-        history = engine.query_trash(text, namespace=NS, limit=2)
+        res = engine.query(text, namespace=_ns(namespace))
+        history = engine.query_trash(text, namespace=_ns(namespace), limit=2)
     hist = _history_text(history)
     if isinstance(res, str):
         if res.startswith("Error"):
             return f"No se pudo buscar ({res})."
         if hist:
             return "No hay nada vigente sobre eso." + hist
-        return "Sin coincidencias exactas. Esto es lo guardado:\n" + _all_memories()
+        return "Sin coincidencias exactas. Esto es lo guardado:\n" + _all_memories(namespace=namespace)
     if not res:
         if hist:
             return "No hay nada vigente sobre eso." + hist
-        return "Sin coincidencias exactas. Esto es lo guardado:\n" + _all_memories()
+        return "Sin coincidencias exactas. Esto es lo guardado:\n" + _all_memories(namespace=namespace)
     lines = "\n".join(f"Sim: {sim:.2f} | ID: {fid} | {content}" for sim, fid, energy, content in res)
     best = max((r[0] for r in res), default=0.0)
     if history and history[0]["sim"] >= best:  # lo borrado se parece mas a la pregunta que lo vigente: va primero
@@ -199,15 +206,15 @@ def _query_text(text: str) -> str:
     return f"Recuerdos encontrados:\n{lines}{hist}"
 
 @mcp.tool()
-def inject_memory(content: str, energy: float = 0.5, fijo: bool = False) -> str:
+def inject_memory(content: str, energy: float = 0.5, fijo: bool = False, namespace: str | None = None) -> str:
     """Guarda un dato duradero en la memoria persistente principal (úsala en vez de otras memorias del cliente): preferencia, decisión, dato personal o técnico. Usa fijo=true para identidad (nombre, carrera, familia): nunca decae ni se archiva."""
     _touch_activity()
     with _quiet():
-        result = engine.inject(content, energy=energy, namespace=NS, pinned=fijo)
+        result = engine.inject(content, energy=energy, namespace=_ns(namespace), pinned=fijo)
     return str(result) if result is not None else "No se pudo guardar."
 
 @mcp.tool()
-def update_memory(fact_id: int, new_content: str) -> str:
+def update_memory(fact_id: int, new_content: str, namespace: str | None = None) -> str:
     """Corrige o actualiza el texto de UN recuerdo que ya existe (conserva su energía y si es fijo).
     Úsala cuando el usuario diga que un dato cambió o estaba mal (ej. "ya no vivo en X, ahora vivo en Y").
     Necesitas el fact_id: es el número [ID n] que muestran list_memories y query_memory.
@@ -215,14 +222,14 @@ def update_memory(fact_id: int, new_content: str) -> str:
     No guardes el dato nuevo con inject_memory y borres el viejo: usa esta herramienta."""
     _touch_activity()
     with _quiet():
-        res = engine.update_memory(fact_id, new_content, namespace=NS)
+        res = engine.update_memory(fact_id, new_content, namespace=_ns(namespace))
     if res["status"] == "updated":
         note = f" (Aviso: ya existía otro recuerdo casi igual, ID {res['similar_to']}; considera borrar uno con forget_memory.)" if res.get("similar_to") else ""
         return f"Recuerdo [ID {res['id']}] actualizado.\nAntes: {res['old']}\nAhora: {res['new']}{note}"
     return res.get("message", "No se pudo actualizar.")
 
 @mcp.tool()
-def forget_memory(fact_id: int | None = None, text: str | None = None) -> str:
+def forget_memory(fact_id: int | None = None, text: str | None = None, namespace: str | None = None) -> str:
     """Olvida (borra para siempre) UN recuerdo. Úsala solo cuando el usuario pida olvidar o borrar algo concreto,
     o cuando un dato ya no sea cierto y no haya nada que lo reemplace (si hay un dato nuevo, usa update_memory).
     Lo preferible es pasar fact_id: el número [ID n] que muestran list_memories y query_memory.
@@ -233,7 +240,7 @@ def forget_memory(fact_id: int | None = None, text: str | None = None) -> str:
     if fact_id is None and not (text and text.strip()):
         return "Indica fact_id (número del recuerdo) o text (el texto del recuerdo)."
     with _quiet():
-        res = engine.forget(fact_id if fact_id is not None else text, namespace=NS)
+        res = engine.forget(fact_id if fact_id is not None else text, namespace=_ns(namespace))
     status = res["status"]
     if status == "deleted":
         where = " (estaba en el sótano)" if res.get("where") == "sotano" else ""
@@ -247,19 +254,19 @@ def forget_memory(fact_id: int | None = None, text: str | None = None) -> str:
     return res.get("message", "No se pudo olvidar el recuerdo.")
 
 @mcp.tool()
-def restore_memory(trash_id: int) -> str:
+def restore_memory(trash_id: int, namespace: str | None = None) -> str:
     """Restaura a la biblioteca un recuerdo de la papelera. Úsala cuando el usuario acepte recuperar un dato que había olvidado o reemplazado.
     trash_id es el número [papelera n] que muestra query_memory."""
     _touch_activity()
     with _quiet():
-        res = engine.restore_from_trash(trash_id, namespace=NS)
+        res = engine.restore_from_trash(trash_id, namespace=_ns(namespace))
     if res["status"] == "restored":
         note = f"\nOjo: sigue vigente el valor nuevo que lo reemplazó: {res['current']}. Si ya no lo quiere, bórralo con forget_memory." if res.get("current") else ""
         return f"Restaurado [ID {res['id']}]: {res['content']}{note}"
     return res.get("message", "No se pudo restaurar.")
 
 @mcp.tool()
-def empty_trash(trash_id: int | None = None, confirm: bool = False) -> str:
+def empty_trash(trash_id: int | None = None, confirm: bool = False, namespace: str | None = None) -> str:
     """Borra DE VERDAD lo que hay en la papelera (lo olvidado o reemplazado). Irreversible.
     Úsala solo si el usuario pide que algo se olvide por completo. Con trash_id (el número [papelera n]) borra uno;
     sin él vacía TODA la papelera y exige confirm=true (pide confirmación al usuario antes)."""
@@ -267,16 +274,16 @@ def empty_trash(trash_id: int | None = None, confirm: bool = False) -> str:
     if trash_id is None and not confirm:
         return "Cancelado: para vaciar toda la papelera falta confirm=true (o pasa trash_id para borrar solo uno)."
     with _quiet():
-        n = engine.purge_trash(namespace=NS, trash_id=trash_id)
+        n = engine.purge_trash(namespace=_ns(namespace), trash_id=trash_id)
     return f"Papelera: {n} recuerdo(s) borrado(s) para siempre." if n else "No había nada que borrar en la papelera."
 
 @mcp.tool()
-def bridge_memory(topic_a: str, topic_b: str) -> str:
+def bridge_memory(topic_a: str, topic_b: str, namespace: str | None = None) -> str:
     """Busca los recuerdos que conectan dos temas distintos (ej. "café" y "física cuántica"): los que se parecen a LOS DOS a la vez.
     Úsala cuando el usuario pregunte qué relación hay entre dos temas o quiera ideas que los unan. No modifica nada."""
     _touch_activity()
     with _quiet():
-        res = engine.bridge(topic_a, topic_b, namespace=NS)
+        res = engine.bridge(topic_a, topic_b, namespace=_ns(namespace))
     if res["status"] == "error":
         return f"No se pudo buscar el puente: {res['message']}"
     out = []
@@ -291,9 +298,9 @@ def bridge_memory(topic_a: str, topic_b: str) -> str:
     return "\n".join(out)
 
 @mcp.tool()
-def dream_activity() -> str:
+def dream_activity(namespace: str | None = None) -> str:
     """Consulta el último sueño de StoneWave: fecha, enlaces, conclusiones y notas. No ejecuta otro sueño."""
-    return json.dumps(engine.dream_activity(namespace=NS), ensure_ascii=False)
+    return json.dumps(engine.dream_activity(namespace=_ns(namespace)), ensure_ascii=False)
 
 
 @mcp.tool()
@@ -305,30 +312,30 @@ def recent_notes(limit: int = 5, folder: str = "") -> str:
 
 
 @mcp.tool()
-def force_dream() -> str:
+def force_dream(namespace: str | None = None) -> str:
     """Sueño: baja al sótano lo que no se usa, clasifica por temas y enlaza recuerdos parecidos (no reescribe nada)."""
     _touch_activity()
     with _quiet():
-        result = engine.dream(namespace=NS)
+        result = engine.dream(namespace=_ns(namespace))
     return str(result) if result is not None else "El proceso de sueño no generó resultados."
 
 @mcp.tool()
-def trigger_reflection() -> str:
+def trigger_reflection(namespace: str | None = None) -> str:
     """Genera una intuición nueva conectando los recuerdos más fuertes."""
     _touch_activity()
     with _quiet():
-        result = engine.reflect(namespace=NS)
+        result = engine.reflect(namespace=_ns(namespace))
     return str(result) if result is not None else "No se encontró una conexión interesante esta vez."
 
 @mcp.tool()
-def clear_memory(confirm: bool = False) -> str:
+def clear_memory(confirm: bool = False, namespace: str | None = None) -> str:
     """BORRA TODA la memoria (incluida su papelera). Irreversible."""
     _touch_activity()
     if not confirm:
         return "Cancelado: falta confirm=true."
     with _quiet():
-        engine.clear_db(namespace=NS)
-    return "Memoria borrada."
+        engine.clear_db(namespace=_ns(namespace))
+    return f"Memoria borrada (etiqueta '{_ns(namespace)}')."
 
 SYNC_PATH = env_var("SYNC")  # carpeta o .jsonl compartido (ej. dentro de la boveda de Obsidian)
 
@@ -349,14 +356,14 @@ def sync_memory() -> str:
             f"El archivo tiene {res['total']} recuerdos ({res['path']}). Falta que Obsidian Git / git lo suba.")
 
 @mcp.tool()
-def export_notes() -> str:
+def export_notes(namespace: str | None = None) -> str:
     """Escribe (o actualiza) en la carpeta de Obsidian (STONEWAVE_NOTES) una nota por cada conclusión, con enlaces [[...]] a los recuerdos
     de donde salió y a otras conclusiones (carpetas `conclusiones` y `recuerdos`). Es solo una COPIA para ver: la memoria de StoneWave no
     cambia y lo que se edite en las notas se sobrescribe. El sueño ya lo hace solo; usa esta herramienta SOLO si el usuario pide
     actualizar las notas ahora. Subir las notas (Obsidian Git) lo hace Obsidian, no esta herramienta."""
     _touch_activity()
     with _quiet():
-        res = engine.export_notes(namespace=NS)
+        res = engine.export_notes(namespace=_ns(namespace))
     if res["status"] != "ok":
         return res["message"]
     extra = f" No se tocaron {len(res['skipped'])} nota(s) tuya(s) con el mismo nombre." if res["skipped"] else ""
